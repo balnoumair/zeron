@@ -7,6 +7,8 @@ Desktop app — GPUI shell, composer, transcript, settings. Depends on backend c
 ```
 apps/zeron/          `zeron` binary (headed UI + headless engine CLI)
 crates/zeron-ui/     Product UI (shell, composer, transcript, …)
+dist/                macOS/Linux packaging assets
+scripts/             package-macos.sh, package-linux.sh, dev-demo.sh
 ```
 
 ## Dependencies
@@ -14,7 +16,7 @@ crates/zeron-ui/     Product UI (shell, composer, transcript, …)
 | Crate | Source |
 | --- | --- |
 | `zeron-proto`, `zeron-doc`, `zeron-engine`, `zeron-harness`, `zeron-rpc` | [comet](https://github.com/balnoumair/comet) |
-| `onyx-ui` | [onyx-ui](https://github.com/balnoumair/onyx-ui) |
+| `onyx-ui`, `onyx-syntax` | [onyx-ui](https://github.com/balnoumair/onyx-ui) |
 
 Clone all three repos as siblings for local development:
 
@@ -35,6 +37,14 @@ Take gpui through `onyx_ui::gpui` — never depend on gpui directly.
 cargo build
 cargo run -p zeron          # headed UI
 cargo run -p zeron -- headless
+cargo run -p zeron -- daemon start
+```
+
+## Package
+
+```bash
+scripts/package-macos.sh
+scripts/package-linux.sh
 ```
 
 ## License
