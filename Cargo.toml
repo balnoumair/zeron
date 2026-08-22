@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = ["crates/zeron-ui", "apps/zeron"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/balnoumair/zeron"
+
+# Backend crates from comet. Git form (for CI / clones without siblings):
+#
+#   zeron-proto = { git = "https://github.com/balnoumair/comet", rev = "<pin>" }
+#
+# Path form for local development when comet is checked out next to this repo:
+[workspace.dependencies]
+zeron-proto = { path = "../comet/crates/proto" }
+zeron-doc = { path = "../comet/crates/doc" }
+zeron-engine = { path = "../comet/crates/engine" }
+zeron-harness = { path = "../comet/crates/harness" }
+zeron-rpc = { path = "../comet/crates/rpc" }
+
+# Design system (gpui pin lives here — take gpui through onyx-ui only).
+onyx-ui = { path = "../onyx-ui/crates/onyx-ui" }
+onyx-syntax = { path = "../onyx-ui/crates/onyx-syntax" }
+
+zeron-ui = { path = "crates/zeron-ui" }
+
+# Must match onyx-ui's pin exactly so Cargo resolves one gpui copy.
+gpui = { git = "https://github.com/wingleeio/zed", rev = "5d1f83d9f27a19bec1fb241dc33b42238af9cf8d" }
+gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "5d1f83d9f27a19bec1fb241dc33b42238af9cf8d", features = [
+    "wayland",
+    "x11",
+    "font-kit",
+    "runtime_shaders",
+] }
+
+# gpui_tokio is not re-exported by onyx-ui; pin must match onyx-ui's gpui rev.
+gpui_tokio = { git = "https://github.com/wingleeio/zed", rev = "5d1f83d9f27a19bec1fb241dc33b42238af9cf8d" }
+
+similar = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+mimalloc = "0.1"
+libc = "0.2"
+unicode-segmentation = "1"
+tempfile = "3"
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
