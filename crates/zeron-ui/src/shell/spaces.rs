@@ -1,37 +1,18 @@
-//! Spaces sidebar: the space-filter dropdown (searchable, with "All projects"),
-//! the filtered Sessions list, and the add-space palette (⌘K-style: device
-//! tabs + filtered folder browser).
-//!
-//! A space = a synced (device, folder) pair. Spaces stopped being a
-//! navigation spine when tabs went device-local: the dropdown only FILTERS
-//! the sidebar's session list (never the tab strip) and hosts space
-//! management (add via the palette; rename/delete via row context menus).
-//! Child module of `shell` so it renders straight off `Shell`'s private state.
-
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
 use zeron_proto::{ChatIndicator, Device, FolderListing, Space};
 
-/// One session inside a project group: (status, chat, branch).
 type Row = (ChatIndicator, zeron_proto::Chat, Option<String>);
 
-/// The space-filter dropdown, `Some` while open. The same searchable-menu
-/// recipe as the composer's ref picker: filter input on top
-/// (`PaletteSearch` context so ↑↓/⏎ bubble to the card), ranked substring
-/// rows, keyboard highlight.
 pub(super) struct SpacesMenu {
     search: Entity<ComposerInput>,
-    /// Keyboard highlight within [`Shell::spaces_menu_rows`].
     active: usize,
-    /// Tracked on the card — puts it on the keyboard dispatch path while the
-    /// search input holds focus (the structure every working picker uses).
     focus: FocusHandle,
     list_scroll: gpui::ScrollHandle,
     _search_events: Subscription,
 }
 
-/// One row of the open dropdown, in display order.
 #[derive(Clone, PartialEq)]
 pub(super) enum SpacesMenuRow {
     All,
@@ -39,37 +20,17 @@ pub(super) enum SpacesMenuRow {
     AddSpace,
 }
 
-/// The add-space palette (a command-K surface, summoned by ⌘K): search bar
-/// across the top, folder browser on the left, a Devices rail on the right,
-/// kbd-hint footer. One surface — picking a device in the rail rebrowses in
-/// place, no step wizard.
 pub(super) struct AddSpaceFlow {
-    /// The device currently browsed (the highlighted rail row).
     device: Option<Device>,
-    /// Filter input; Enter descends into the highlighted folder. Carries the
-    /// tab-completion ghost (the faint suffix ⇥ accepts), and a trailing `/`
-    /// on a folder-naming query descends immediately.
     search: Entity<ComposerInput>,
     browser: Loadable<FolderListing>,
-    /// Requested browser path (`None` = the device's default, i.e. home).
     browser_path: Option<String>,
-    /// The device's home (the path a `None` browse resolved to) — breadcrumbs
-    /// fold everything up to here into the device-name crumb.
     home: Option<String>,
-    /// Best-effort git seed for the CURRENT browser path (known when we
-    /// descended through an entry whose `is_repo` we saw; the owning device's
-    /// SpacesSync re-verifies either way).
     browser_repo: bool,
-    /// Keyboard highlight within the FILTERED folder rows.
     active: usize,
     submit_busy: bool,
     error: Option<SharedString>,
-    /// Tracked on the card (`track_focus`) — puts the card on the keyboard
-    /// dispatch path so ↑↓/⌫/esc reach `add_space_key` while the search input
-    /// holds focus (the structure every working picker uses).
     focus: FocusHandle,
-    /// Folder-list scroll — keyboard navigation keeps the highlighted row in
-    /// view (`scroll_to_item`).
     list_scroll: gpui::ScrollHandle,
     focus_pending: bool,
     load_task: Option<Task<()>>,
@@ -77,7 +38,6 @@ pub(super) struct AddSpaceFlow {
     _search_events: Subscription,
 }
 
-/// The space-row Rename dialog (same shape as [`RenameChatDialog`]).
 pub(super) struct RenameSpaceDialog {
     pub space_id: String,
     pub input: Entity<ComposerInput>,
@@ -85,34 +45,17 @@ pub(super) struct RenameSpaceDialog {
     pub _events: Subscription,
 }
 
-/// Dot color for a chat's display status (tab dots + Sessions rows).
 pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
     match status {
-        // Pink, not amber — the harsh yellow read as a warning; running is
-        // routine (user request). Non-done statuses sit well below full
-        // strength: at full alpha the colored words shouted across the
-        // whole sidebar (user request) — only Done keeps its pop.
-        ChatIndicator::Working => {
-            theme.busy.opacity(0.55) // pink-400, muted
-        }
-        // Blue: "asking you a question" must read differently from "busy
-        // working" at a glance.
+        ChatIndicator::Working => theme.busy.opacity(0.55),
         ChatIndicator::AwaitingInput => theme.accent.opacity(0.6),
         ChatIndicator::Errored => theme.danger.opacity(0.65),
-        // Green: finished-but-unseen reads as "ready for you".
-        ChatIndicator::Completed => {
-            theme.success.opacity(0.9) // emerald-400
-        }
+        ChatIndicator::Completed => theme.success.opacity(0.9),
         ChatIndicator::Idle => crate::theme::ink(0.14),
     }
 }
 
 impl Shell {
-    // ---- space filter ----
-
-    /// Set the sidebar's session filter (`None` = All spaces). On the
-    /// new-session canvas the space context follows the filter — the canvas
-    /// default is "the space you're looking at".
     pub(super) fn set_space_filter(&mut self, filter: Option<String>, cx: &mut Context<Self>) {
         self.settings.space_filter = filter.clone();
         if let Some(space_id) = filter
@@ -126,9 +69,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Close the space-filter dropdown through the exit animation (no-op when
-    /// it isn't open). Every close path funnels here so the menu always
-    /// animates out instead of vanishing.
     fn close_spaces_menu(&mut self, cx: &mut Context<Self>) {
         if self.spaces_menu.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.spaces_menu);
@@ -136,8 +76,6 @@ impl Shell {
         }
     }
 
-    /// Land in a just-added space: filter the sidebar to it and open the
-    /// new-session canvas there.
     pub(super) fn land_in_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         self.route = Route::Chat;
         self.settings.space_filter = Some(space_id.clone());
@@ -150,11 +88,6 @@ impl Shell {
         cx.notify();
     }
 
-    // ---- sidebar sections ----
-
-    /// The filter's display rows: "All projects", then spaces matching the
-    /// search (ranked — `popover::filter_indices`), then "New project…".
-    /// "All" only shows on an empty query (searching means hunting a space).
     fn spaces_menu_rows(&self, cx: &App) -> Vec<SpacesMenuRow> {
         let query = self
             .spaces_menu
@@ -181,8 +114,6 @@ impl Shell {
     }
 
     fn open_spaces_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
-        // to the card's key handler.
         let search =
             cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
@@ -193,7 +124,6 @@ impl Shell {
                 cx.notify();
             }
         });
-        // The highlight starts ON the current filter row.
         let current = self.settings.space_filter.clone();
         let handle = search.read(cx).focus_handle(cx);
         self.spaces_menu.open(SpacesMenu {
@@ -214,7 +144,6 @@ impl Shell {
         if let Some(menu) = self.spaces_menu.open_mut() {
             menu.active = start;
         }
-        // Focusable before first paint (the add-space palette's proven order).
         window.focus(&handle, cx);
         cx.notify();
     }
@@ -230,11 +159,7 @@ impl Shell {
         }
     }
 
-    /// Dropdown keys (bubbling from the focused search input): ↑↓ navigate,
-    /// ⏎ activates the highlighted row, esc closes.
     fn spaces_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        // The card stays mounted (and focused) through the exit animation —
-        // keys must not drive a dying menu.
         if !self.spaces_menu.is_open() {
             return;
         }
@@ -269,10 +194,6 @@ impl Shell {
         }
     }
 
-    /// The sidebar's Projects shelf: a quiet title with hover actions. The
-    /// ellipsis keeps the existing project-filter dropdown, while `+` opens a
-    /// new thread using the current project context.
-    /// Sits OUTSIDE the sidebar's scroll region so the float never clips.
     pub(super) fn render_spaces_filter(
         &mut self,
         theme: &Theme,
@@ -294,8 +215,6 @@ impl Shell {
                 cx.listener(|this, _, _, _| this.spaces_menu.note_trigger_press()),
             )
             .on_click(cx.listener(|this, _, window, cx| {
-                // A press that found the menu open closes it (the card's
-                // mouse-down-out already began the close) — never reopen.
                 if this.spaces_menu.take_press_was_open() {
                     this.close_spaces_menu(cx);
                 } else {
@@ -374,8 +293,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The dropdown card: search on top, "All projects" + space rows (check on
-    /// the active filter; right-click for rename/remove) + "New project…".
     fn render_spaces_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let (search, active, focus, list_scroll) = {
             let Some(menu) = self.spaces_menu.get() else {
@@ -391,8 +308,6 @@ impl Shell {
         let rows = self.spaces_menu_rows(cx);
         let filter = self.settings.space_filter.clone();
         let now = Utc::now();
-        // (name, device tag) per space row — presence reuses the session
-        // rows' heartbeat signal.
         let details: Vec<(SpacesMenuRow, SharedString, Option<SharedString>, bool)> = {
             let state = self.state.read(cx);
             rows.iter()
@@ -478,7 +393,6 @@ impl Shell {
                                     .text_color(theme.text_muted.opacity(0.45))
                                     .child(tag),
                             )
-                            // Disconnected glyph, not the word (user request).
                             .when(offline, |el| {
                                 el.child(
                                     icon(icons::WIFI_OFF)
@@ -488,8 +402,6 @@ impl Shell {
                                 )
                             })
                         })
-                        // No check glyph — the selected row's wash (menu_row's
-                        // active styling) is the selection signal.
                     },
                 ));
 
@@ -512,9 +424,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The sidebar's Sessions list: every session (idle included) of the
-    /// filter space — or all spaces under "All" — attention-sorted. Rows are
-    /// keyed for the FLIP resort glide.
     pub(super) fn render_active_rows(
         &mut self,
         theme: &Theme,
@@ -532,17 +441,12 @@ impl Shell {
                     None => true,
                 })
                 .map(|(status, chat)| {
-                    // Line 1 is the project name behind a folder mark — the
-                    // card's project identity, which the eye scans first;
-                    // project-less sessions read as their home-dir cwd `~`.
                     let space = state.space_for_chat(chat);
                     let folder = match (space, chat.space_id.as_deref()) {
                         (Some(space), _) => space.display_name().to_string(),
                         (None, None) => "~".to_string(),
                         (None, Some(_)) => "?".to_string(),
                     };
-                    // The branch shows whenever the engine has stamped one —
-                    // main-checkout sessions included, not just worktrees.
                     let branch = chat
                         .branch
                         .as_deref()
@@ -553,11 +457,6 @@ impl Shell {
                 })
                 .collect()
         };
-        // Cluster by project, keeping `overview_chats`' ordering: a group
-        // lands where its most recent session did, so the project you are
-        // working in still floats to the top and the attention buckets carry
-        // over. Keyed by space id, not display name — two devices can host
-        // folders that print the same.
         let mut groups: Vec<(Option<String>, String, Vec<Row>)> = Vec::new();
         for (status, chat, folder, branch) in rows {
             let key = chat.space_id.clone();
@@ -572,8 +471,6 @@ impl Shell {
         for (key, folder, items) in groups {
             let space_key = key.as_deref().unwrap_or("~").to_string();
             let collapsed = self.collapsed_spaces.contains(&space_key);
-            // The project reads ONCE, as the group's title — repeating it on
-            // every card was the noise that made a mixed list unscannable.
             out.push((
                 format!("h:{space_key}"),
                 super::SPACE_HEADER_HEIGHT,
@@ -615,11 +512,6 @@ impl Shell {
         out
     }
 
-    /// A project's title above its cluster of sessions: the folder mark is
-    /// itself the open/closed affordance, with a scoped `+` for a new thread.
-    /// The group's air is carried in the header's own height so the FLIP
-    /// resort math (which sums the keyed heights) stays exact.
-    /// Folded groups show their session count, matching "Archived (N)".
     fn render_space_header(
         &self,
         space_key: String,
@@ -719,28 +611,18 @@ impl Shell {
             .into_any_element()
     }
 
-    // ---- add-space flow (the ⌘K palette) ----
-
     pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
         let devices: Vec<Device> = self.state.read(cx).devices.clone();
         let local = self.state.read(cx).local_device_id.clone();
-        // Land on this device's tab (else the first registered device).
         let device = devices
             .iter()
             .find(|d| local.as_deref() == Some(d.id.as_str()))
             .or_else(|| devices.first())
             .cloned();
-        // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
-        // bubble to the palette frame (`add_space_key`) instead of moving the
-        // text caret — Enter and ⌘Enter are both handled there.
         let search =
             cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
-                // Typing `/` after a query that names a folder descends into
-                // it — the query reads as a path segment, so the slash IS the
-                // pick (shell-style). Otherwise the slash stays in the query
-                // (it matches nothing, which is honest feedback).
                 if this.add_space_slash_descend(cx) {
                     return;
                 }
@@ -774,7 +656,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Devices-rail click: rebrowse the same palette on another device.
     fn add_space_pick_device(&mut self, device: Device, cx: &mut Context<Self>) {
         let Some(flow) = self.add_space.as_mut() else {
             return;
@@ -795,8 +676,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// The current listing's folder rows filtered by the search query
-    /// (prefix matches first — `popover::filter_indices`).
     fn add_space_filtered(&self, cx: &App) -> Vec<zeron_proto::FolderEntry> {
         let Some(flow) = self.add_space.as_ref() else {
             return Vec::new();
@@ -813,7 +692,6 @@ impl Shell {
             .collect()
     }
 
-    /// Descend into the highlighted (filtered) folder; clears the query.
     fn add_space_open_active(&mut self, cx: &mut Context<Self>) {
         let rows = self.add_space_filtered(cx);
         let Some(flow) = self.add_space.as_ref() else {
@@ -835,12 +713,6 @@ impl Shell {
         self.load_space_folders(Some(full), cx);
     }
 
-    /// Slash-descend: when the query ends in `/` and the part before it names
-    /// a folder of the current listing (exact name — matching casing wins
-    /// over a case-colliding sibling — else a unique prefix), descend into it
-    /// as though it were picked. Returns whether it fired —
-    /// descending clears the query, so the caller must not keep acting on the
-    /// old text.
     fn add_space_slash_descend(&mut self, cx: &mut Context<Self>) -> bool {
         let target = {
             let Some(flow) = self.add_space.as_ref() else {
@@ -872,10 +744,6 @@ impl Shell {
         true
     }
 
-    /// The tab-completion target: the highlighted row when the query prefixes
-    /// its name, else the first prefix match (filtering ranks those first).
-    /// `(full name, remaining suffix)`; `None` on an empty query or when the
-    /// match is already complete.
     fn add_space_completion(&self, cx: &App) -> Option<(String, String)> {
         let flow = self.add_space.as_ref()?;
         let query = flow.search.read(cx).text().to_string();
@@ -897,8 +765,6 @@ impl Shell {
         Some((entry.name.clone(), entry.name[len..].to_string()))
     }
 
-    /// ⇥: accept the completion — the query becomes the full folder name
-    /// (the ghost the input was previewing). Descending stays on `/`/⏎.
     fn add_space_accept_completion(&mut self, cx: &mut Context<Self>) {
         let Some((name, _)) = self.add_space_completion(cx) else {
             return;
@@ -909,7 +775,6 @@ impl Shell {
         }
     }
 
-    /// Descend into a specific folder row (mouse path); clears the query.
     fn add_space_descend(&mut self, full: String, is_repo: bool, cx: &mut Context<Self>) {
         let Some(flow) = self.add_space.as_mut() else {
             return;
@@ -920,7 +785,6 @@ impl Shell {
         self.load_space_folders(Some(full), cx);
     }
 
-    /// ListFolders on the flow's device (relay-forwarded when remote).
     pub(super) fn load_space_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -940,7 +804,6 @@ impl Shell {
             if let Some(p) = &path {
                 params.insert("path".into(), serde_json::Value::String(p.clone()));
             }
-            // Only target remote devices — local calls skip the relay.
             if let (Some(target), local) = (&device_id, &local)
                 && local.as_deref() != Some(target.as_str())
             {
@@ -958,9 +821,6 @@ impl Shell {
                     flow.browser = match result {
                         Ok(value) => match serde_json::from_value::<FolderListing>(value) {
                             Ok(listing) => {
-                                // A pathless browse resolved home — remember it
-                                // so the breadcrumbs can fold it into the
-                                // device crumb.
                                 if went_home {
                                     flow.home = Some(listing.path.clone());
                                 }
@@ -977,7 +837,6 @@ impl Shell {
         }));
     }
 
-    /// Create the space for the browser's current folder.
     fn submit_add_space(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -996,9 +855,6 @@ impl Shell {
         };
         let path = listing.path.clone();
         let git_detected = flow.browser_repo;
-        // Same (device, folder) already has a space → just switch to it. The
-        // engine dedupes this case too (a createSpace for a duplicate pair
-        // no-ops), so creating would leave the minted id dangling.
         if let Some(existing) = self
             .state
             .read(cx)
@@ -1017,8 +873,6 @@ impl Shell {
         flow.submit_busy = true;
         flow.error = None;
         let space_id = uuid::Uuid::new_v4().to_string();
-        // Optimistic echo: the watch frame carrying the real row replaces it
-        // by id (apply_spaces re-sorts; same-id upsert is idempotent).
         let space = Space {
             id: space_id.clone(),
             device_id: device.id.clone(),
@@ -1052,7 +906,6 @@ impl Shell {
                         shell.land_in_space(submit_id.clone(), cx);
                     }
                     Err(err) => {
-                        // Roll the optimistic row back; surface the error inline.
                         shell.state.update(cx, |s, cx| {
                             s.spaces.retain(|space| space.id != submit_id);
                             cx.notify();
@@ -1073,7 +926,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Go up to the parent folder (←, and ⌫ on an empty query).
     fn add_space_go_up(&mut self, cx: &mut Context<Self>) {
         let parent = self
             .add_space
@@ -1082,21 +934,13 @@ impl Shell {
             .and_then(|l| parent_path(&l.path));
         if let Some(parent) = parent {
             if let Some(flow) = self.add_space.as_mut() {
-                flow.browser_repo = false; // unknown at the parent
+                flow.browser_repo = false;
             }
             self.load_space_folders(Some(parent), cx);
         }
     }
 
-    /// Palette keys (bubbling from the focused search input) — every legend
-    /// maps to a REAL key: ↑↓ (or ctrl-n/p) navigate, →/⏎ open the
-    /// highlighted folder, ← up a level, ⇥ completes the query to the
-    /// previewed folder name, ⌘⏎ add the OPEN folder, ⌫ (empty query) also
-    /// goes up, esc closes. (Typing `/` also descends — see the Edited
-    /// subscription.)
     fn add_space_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        // ←/→ act on the FOLDERS, not the text cursor — the palette is a
-        // navigator first; queries are short and edited with ⌫.
         match event.keystroke.key.as_str() {
             "right" => {
                 self.add_space_open_active(cx);
@@ -1106,8 +950,6 @@ impl Shell {
                 self.add_space_go_up(cx);
                 return;
             }
-            // Unbound in "PaletteSearch" (like enter), so it bubbles here
-            // instead of editing text or moving focus.
             "tab" => {
                 self.add_space_accept_completion(cx);
                 return;
@@ -1129,19 +971,10 @@ impl Shell {
                 let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
                 if let Some(flow) = self.add_space.as_mut() {
                     flow.active = popover::menu_step(Some(flow.active), count, delta).unwrap_or(0);
-                    // Keep the highlighted row in view as the cursor walks
-                    // past the viewport (user-reported: the list didn't
-                    // follow the keyboard).
                     flow.list_scroll.scroll_to_item(flow.active);
                     cx.notify();
                 }
             }
-            // ⏎ opens the highlighted folder (an alias for →); the space is
-            // added with ⌘⏎ — and the chord acts on the folder OPEN in the
-            // breadcrumbs, not the highlight. The highlight auto-rests on the
-            // first row, so a chord that took it would add arbitrary
-            // subfolders; the usual target (a repo root full of subfolders)
-            // is only ever "the folder you're standing in".
             popover::MenuKey::Enter => self.add_space_open_active(cx),
             popover::MenuKey::ModEnter => self.submit_add_space(cx),
             popover::MenuKey::Backspace => {
@@ -1157,8 +990,6 @@ impl Shell {
         }
     }
 
-    /// The palette card: ⌘K search bar (with the ⌘⏎ add / esc chips) ·
-    /// breadcrumbs + folder list beside the devices rail · kbd-hint footer.
     pub(super) fn render_add_space_overlay(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -1203,9 +1034,6 @@ impl Shell {
         };
         let devices = self.state.read(cx).devices.clone();
         let rows = self.add_space_filtered(cx);
-        // Push the completion preview into the input — the faint suffix ahead
-        // of the caret that ⇥ accepts. Recomputed every render (query, active
-        // row, and listing all move it); `set_ghost` no-ops when unchanged.
         let ghost = self
             .add_space_completion(cx)
             .map(|(_, suffix)| SharedString::from(suffix));
@@ -1213,8 +1041,6 @@ impl Shell {
         let query_empty = search.read(cx).is_empty();
         let hairline = crate::theme::hairline(0.06);
         let now = Utc::now();
-        // (browsed device name, online) per rail row — presence is the same
-        // signal the sidebar space rows use.
         let device_presence: Vec<bool> = {
             let state = self.state.read(cx);
             devices
@@ -1228,7 +1054,6 @@ impl Shell {
             .unwrap_or_else(|| "This device".to_string())
             .into();
 
-        // A quiet mono key-cap chip ("⌘K" / "esc") for the search bar ends.
         let key_chip = |theme: &Theme| {
             div()
                 .h(px(22.0))
@@ -1245,16 +1070,11 @@ impl Shell {
                 .text_color(theme.text_muted.opacity(0.7))
         };
 
-        // ── search bar (the ⌘K bar): summon chip · input · "⌘ Enter" add ·
-        //    esc. The primary chip leads with the ⌘ glyph, then says "Enter"
-        //    in words (user request — the bare return arrow read as noise).
         let submit_chip = popover::btn_primary(&theme, "")
             .id("add-space-submit")
             .h(px(22.0))
             .px(px(8.0))
             .py(px(0.0))
-            // Match the key-cap chips beside it (rounded-5) — btn_primary's
-            // rounded-8 at this size read as a different component.
             .rounded(px(5.0))
             .flex_none()
             .flex()
@@ -1273,9 +1093,6 @@ impl Shell {
                 .child(SharedString::from("Enter"))
             })
             .when(submit_busy, |el| el.child(SharedString::from("Adding…")));
-        // Header and footer sit a shade DEEPER than the body (the shared
-        // recessed-band tone) — the bands frame the folder list, which stays
-        // on the brighter tint.
         let band = popover::band();
         let input_row = div()
             .h(px(46.0))
@@ -1318,17 +1135,10 @@ impl Shell {
                     .child(SharedString::from("esc")),
             );
 
-        // ── breadcrumbs ("MacBook Pro / Projects / zeron"): the quiet mono
-        //    path voice, `/` separators. The device crumb stands in for home —
-        //    everything up to the resolved home path folds into it; below
-        //    home the full path shows. Ancestors (device crumb included) are
-        //    clickable.
         let crumbs: AnyElement = match &listing {
             Some(listing) => {
                 let segments = breadcrumbs(&listing.path);
                 let last = segments.len().saturating_sub(1);
-                // Root "/" chip always folds; the home segments fold too when
-                // the browsed path sits at/under home.
                 let at_home = home.as_deref() == Some(listing.path.as_str());
                 let folded = 1 + home
                     .as_deref()
@@ -1352,8 +1162,6 @@ impl Shell {
                             .rounded(px(4.0))
                             .child(device_name.clone());
                         if at_home {
-                            // Standing at home — the device crumb IS the
-                            // current folder.
                             crumb
                                 .text_color(theme.text.opacity(0.85))
                                 .into_any_element()
@@ -1416,7 +1224,6 @@ impl Shell {
             None => div().pt(px(6.0)).into_any_element(),
         };
 
-        // ── folder list ─────────────────────────────────────────────────────
         let base_path = listing.as_ref().map(|l| l.path.clone()).unwrap_or_default();
         let list: AnyElement = if loading {
             div()
@@ -1469,10 +1276,6 @@ impl Shell {
                 }))
                 .into_any_element()
         } else {
-            // The 6px gutters live on a WRAPPER, outside the scroll viewport:
-            // in-content padding/spacers can't do it — the wheel's max offset
-            // eats bottom padding, and `scroll_to_item` (keyboard) pins the
-            // row's bottom to the viewport edge regardless.
             div()
                 .flex_1()
                 .min_h_0()
@@ -1486,7 +1289,6 @@ impl Shell {
                         .px(px(8.0))
                         .flex()
                         .flex_col()
-                        // The app-wide list rhythm (sidebar rows, menu rows): 2px.
                         .gap(px(2.0))
                         .children(rows.into_iter().enumerate().map(|(ix, entry)| {
                             let name: SharedString = entry.name.clone().into();
@@ -1498,8 +1300,6 @@ impl Shell {
                                 ix == active,
                                 format!("add-space-folder-{ix}"),
                             )
-                            // The floating-card selection language: the wash
-                            // plus the ring-only inset outline.
                             .when(ix == active, |el| {
                                 el.shadow(crate::theme::card_selected_shadows())
                             })
@@ -1514,8 +1314,6 @@ impl Shell {
                                     .text_color(theme.text_muted.opacity(0.8)),
                             )
                             .child(div().flex_1().min_w_0().truncate().child(name))
-                            // Repos get a quiet trailing branch glyph — the row
-                            // you're usually hunting for announces itself.
                             .when(is_repo, |el| {
                                 el.child(
                                     icon(icons::GIT_BRANCH)
@@ -1529,9 +1327,6 @@ impl Shell {
                 .into_any_element()
         };
 
-        // ── devices rail (mock right column): platform glyph + name +
-        //    presence dot per row, an info line naming the browsed device.
-        //    Rows are the tab recipe (h-28 rounded-8 washes), vertical.
         let rail = div()
             .w(px(196.0))
             .flex_none()
@@ -1555,7 +1350,6 @@ impl Shell {
             .children(devices.into_iter().enumerate().map(|(ix, dev)| {
                 let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
                 let online = device_presence.get(ix).copied().unwrap_or(false);
-                // The Devices-page platform mapping (settings::devices).
                 let platform_icon = match dev.platform.as_str() {
                     "macos" | "darwin" => icons::LAPTOP,
                     "web" => icons::GLOBAL,
@@ -1576,8 +1370,6 @@ impl Shell {
                     .text_size(px(12.5))
                     .cursor_pointer()
                     .when(is_active, |el| {
-                        // The floating-card selection language: wash +
-                        // ring-only inset outline.
                         el.bg(crate::theme::card_selected_bg())
                             .shadow(crate::theme::card_selected_shadows())
                             .text_color(theme.text)
@@ -1602,8 +1394,6 @@ impl Shell {
                             .rounded_full()
                             .flex_none()
                             .when(online, |el| {
-                                // The Devices-page presence emerald, soft glow
-                                // included.
                                 let emerald = theme.success;
                                 el.bg(emerald.opacity(0.9)).shadow(vec![gpui::BoxShadow {
                                     color: emerald.opacity(0.55),
@@ -1639,9 +1429,6 @@ impl Shell {
                     )))),
             );
 
-        // ── body: folder column (crumbs + list) beside the devices rail.
-        //    FIXED height — sparse folders, loading skeletons, and device
-        //    switches must not resize the card (the list fills and scrolls).
         let body = div()
             .h(px(330.0))
             .flex()
@@ -1658,7 +1445,6 @@ impl Shell {
             )
             .child(rail);
 
-        // ── footer: the shared key-cap legend voice (popover::key_hint).
         let footer = div()
             .flex_none()
             .bg(band)
@@ -1697,9 +1483,6 @@ impl Shell {
                 .rounded(px(14.0))
                 .border_1()
                 .border_color(crate::theme::hairline(0.10))
-                // The popover_card glass recipe: a translucent tint over the
-                // frosted backdrop blur (`popover::modal` wraps in `frosted`) —
-                // an opaque fill here killed the vibrancy every other float has.
                 .bg(if theme.is_glass() {
                     theme.glass_overlay()
                 } else {
@@ -1710,15 +1493,10 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .text_color(theme.text)
-                // On the keyboard dispatch path (see `AddSpaceFlow::focus`) — the
-                // pickers' proven structure for frame-level keys with a focused
-                // child input.
                 .track_focus(&focus)
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                     this.add_space_key(event, cx)
                 }))
-                // Clicking the scrim dismisses (user requirement) — same close
-                // path as Escape.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.add_space = None;
                     cx.notify();
@@ -1727,9 +1505,6 @@ impl Shell {
                 .child(body)
                 .child(footer)
                 .into_any_element();
-        // The glass-modal variant: lighter scrim + a frost radius matching
-        // this card's 14px rounding, so the palette reads like the popovers
-        // instead of a flat slab over a 60% dim (user request).
         Some(popover::modal_glass(
             "add-space-dialog",
             viewport,
@@ -1737,8 +1512,6 @@ impl Shell {
             14.0,
         ))
     }
-
-    // ---- space context menu / rename / delete overlays ----
 
     fn close_space_menu(&mut self, cx: &mut Context<Self>) {
         if self.space_menu.begin_close() {
@@ -1794,8 +1567,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Space context menu + rename dialog + delete confirm (appended to the
-    /// shell's overlay list).
     pub(super) fn render_space_overlays(
         &mut self,
         viewport: gpui::Size<Pixels>,

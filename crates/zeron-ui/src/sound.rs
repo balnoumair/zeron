@@ -1,17 +1,3 @@
-//! Session notification sounds — the herdr approach (state-transition chimes
-//! played through the platform's own audio CLI, zero Rust audio deps):
-//!
-//! - two short chimes embedded in the binary (`assets/sounds/*.wav`, synthesized
-//!   in-repo — no external assets): **done** (run finished) and **request**
-//!   (agent is asking a question);
-//! - playback = write to a temp file, hand it to the system player on a
-//!   background thread: `afplay` (macOS), PowerShell `Media.SoundPlayer`
-//!   (Windows), first of `paplay`/`pw-play`/`aplay`/`ffplay`/`mpv` (Linux —
-//!   WAV, so even bare ALSA `aplay` decodes it);
-//! - `ZERON_DISABLE_SOUND` env kill-switch + the `soundEnabled` ui-setting;
-//! - failures are logged and swallowed — a missing player must never bother
-//!   the session flow.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -21,17 +7,12 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.wav");
 static SOUND_REQUEST: &[u8] = include_bytes!("../assets/sounds/request.wav");
 
-/// Which notification chime to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sound {
-    /// A run finished (Working → Idle).
     Done,
-    /// The agent is waiting on a question (→ AwaitingInput).
     Request,
 }
 
-/// Play a chime on a background thread. Silently a no-op when disabled or no
-/// player is available.
 pub fn play(sound: Sound) {
     if std::env::var_os(DISABLE_ENV).is_some() {
         return;
@@ -48,7 +29,6 @@ pub fn play(sound: Sound) {
 }
 
 fn play_bytes(data: &[u8]) -> Result<(), String> {
-    // The system players want a file path; write the embedded bytes out.
     let tmp = temp_path();
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     let result = run_player(&tmp);
@@ -68,8 +48,6 @@ fn run_player(path: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn run_player(path: &Path) -> Result<(), String> {
-    // SoundPlayer handles WAV natively; PlaySync keeps the process alive for
-    // the chime's duration.
     let script = format!(
         "(New-Object Media.SoundPlayer '{}').PlaySync()",
         path.display()
@@ -93,8 +71,6 @@ fn run_player(path: &Path) -> Result<(), String> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn run_player(path: &Path) -> Result<(), String> {
-    // WAV everywhere, so even bare ALSA aplay decodes it (herdr must exclude
-    // aplay because it ships mp3s).
     let players: &[(&str, &[&str])] = &[
         ("paplay", &[]),
         ("pw-play", &[]),
@@ -113,7 +89,6 @@ fn run_player(path: &Path) -> Result<(), String> {
 }
 
 fn run_checked(program: &str, args: &[&str], path: &Path) -> Result<(), String> {
-    // Bounded wait: a wedged audio daemon must not accumulate zombie threads.
     let mut child = std::process::Command::new(program)
         .args(args)
         .arg(path)
@@ -144,15 +119,8 @@ fn run_checked(program: &str, args: &[&str], path: &Path) -> Result<(), String> 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Transition mapping (pure — herdr's notification_sound_for_state_change)
-// ---------------------------------------------------------------------------
-
 use zeron_proto::SessionStatus;
 
-/// Which chime (if any) a session-status transition deserves. Same-state
-/// updates never chime; a question always chimes; a completion chimes on the
-/// Working→Idle edge.
 pub fn sound_for_transition(prev: SessionStatus, new: SessionStatus) -> Option<Sound> {
     if prev == new {
         return None;
@@ -171,7 +139,6 @@ mod tests {
     #[test]
     fn transition_mapping_matches_herdr_semantics() {
         use SessionStatus::*;
-        // A question always chimes, wherever it came from.
         assert_eq!(
             sound_for_transition(Working, AwaitingInput),
             Some(Sound::Request)
@@ -180,11 +147,9 @@ mod tests {
             sound_for_transition(Idle, AwaitingInput),
             Some(Sound::Request)
         );
-        // Completion = the Working→Idle edge only.
         assert_eq!(sound_for_transition(Working, Idle), Some(Sound::Done));
         assert_eq!(sound_for_transition(AwaitingInput, Idle), None);
         assert_eq!(sound_for_transition(Errored, Idle), None);
-        // Same state / other edges stay silent.
         assert_eq!(sound_for_transition(Working, Working), None);
         assert_eq!(sound_for_transition(Idle, Working), None);
         assert_eq!(sound_for_transition(Working, Errored), None);

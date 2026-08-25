@@ -1,8 +1,3 @@
-//! Git history pane: paged commit rows plus a topological lane graph.
-//!
-//! The pane is hosted by the current Changes surface for now, but owns its
-//! data and rendering so it can move intact into the future right-panel tabs.
-
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -76,8 +71,6 @@ fn lane_index(lanes: &[ActiveLane], id: usize) -> usize {
         .expect("active Git history lane exists")
 }
 
-/// Commits arrive child-before-parent from `git log --topo-order`. Active
-/// lanes point at the parent commit that will eventually resolve each path.
 fn layout_graph(commits: &[GitHistoryCommit], head_sha: Option<&str>) -> GraphLayout {
     let mut active_lanes: Vec<ActiveLane> = Vec::new();
     let mut next_lane_id = 0usize;
@@ -209,7 +202,6 @@ fn graph_width(lane_count: usize) -> f32 {
 }
 
 fn estimated_ref_badge_width(reference: &GitHistoryRef) -> f32 {
-    // 10 px icon + 2 px gap + 10 px horizontal padding + the 10 px label.
     (22.0 + reference.label.chars().count() as f32 * 5.7).min(HISTORY_REF_BADGE_MAX_WIDTH)
 }
 
@@ -228,8 +220,6 @@ fn visible_ref_count(refs: &[GitHistoryRef], available_width: f32) -> usize {
         return 0;
     }
 
-    // Start with no visible badges so the overflow target remains available
-    // when even the first badge plus `+N` would exceed the ref area.
     let mut visible = 0;
     for count in 1..=refs.len() {
         let hidden = refs.len() - count;
@@ -349,7 +339,6 @@ pub struct GitHistory {
 
 pub enum GitHistoryEvent {
     FetchSucceeded,
-    /// A commit row was clicked — the host opens it as its own diff tab.
     OpenCommit(GitHistoryCommit),
 }
 
@@ -611,8 +600,6 @@ impl GitHistory {
                 match result {
                     Ok(_) => {
                         history.fetch_error = None;
-                        // Cancel a pre-fetch history request so the next page
-                        // is guaranteed to observe the updated remote refs.
                         history.request_task = None;
                         history.loading = false;
                         history.fetch_page(key, cwd, target, 0, true, cx);
@@ -1088,8 +1075,6 @@ impl GitHistory {
             .text_size(px(11.0))
             .cursor_pointer()
             .hover(|style| style.bg(crate::theme::ink(0.025)))
-            // A commit row click opens the commit as its own diff tab (the
-            // host — the right pane's surface strip — listens; user request).
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.emit(GitHistoryEvent::OpenCommit(open_commit.clone()));
             }))
@@ -1172,7 +1157,6 @@ impl GitHistory {
                         theme.text_muted
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        // The sha chip must not ALSO open the commit tab.
                         cx.stop_propagation();
                         this.copy_sha(sha.clone(), cx)
                     }))

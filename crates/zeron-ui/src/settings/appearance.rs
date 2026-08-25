@@ -1,14 +1,3 @@
-//! Settings → Appearance: pick between following the system and pinning light or
-//! dark.
-//!
-//! Uses [`widgets::option_card_row`] — a preview-card picker, because the choice
-//! is a *look*, and a miniature of the result says more than a sentence about it.
-//! The control itself is theme-agnostic; only the previews below know what a
-//! theme is.
-//!
-//! Stateless. The choice lives in the [`crate::appearance`] globals, and
-//! `set_mode` repaints every window, so this page has nothing of its own to hold.
-
 use gpui::{
     AnyElement, Context, Hsla, IntoElement, Render, SharedString, Window, div, prelude::*, px,
 };
@@ -25,12 +14,6 @@ impl AppearancePage {
     }
 }
 
-/// One placeholder bar in the miniature, width given as a fraction of its
-/// container.
-///
-/// Relative rather than fixed px because the System card renders this same
-/// miniature into *half* a card. Fixed widths were wider than the squeezed
-/// content pane and spilled out over the card edge.
 fn bar(fraction: f32, tone: Hsla) -> gpui::Div {
     div()
         .h(px(5.0))
@@ -39,8 +22,6 @@ fn bar(fraction: f32, tone: Hsla) -> gpui::Div {
         .bg(tone)
 }
 
-/// Which corners a miniature rounds — the split card needs each half to round
-/// only its outer side so the two meet flush down the middle.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Corners {
     All,
@@ -48,14 +29,6 @@ enum Corners {
     Right,
 }
 
-/// A miniature of the app in `theme`: sidebar strip, inset content card, a few
-/// placeholder lines. Built from the theme's own tokens rather than fixed
-/// swatches, so the previews stay honest if the palette is retuned.
-///
-/// Rounds itself: the card frame cannot do it for us (see
-/// [`widgets::OPTION_CARD_RADIUS`]). Only this root paints a background that
-/// reaches the corners — the sidebar strip is transparent and the content card is
-/// inset — so rounding here is enough.
 fn miniature(theme: &Theme, corners: Corners) -> AnyElement {
     let line = theme.text.opacity(0.22);
     let strong = theme.text.opacity(0.34);
@@ -67,7 +40,6 @@ fn miniature(theme: &Theme, corners: Corners) -> AnyElement {
         Corners::Right => root.rounded_tr(r).rounded_br(r),
     };
     root.child(
-        // Sidebar strip.
         div()
             .w(px(44.0))
             .h_full()
@@ -84,7 +56,6 @@ fn miniature(theme: &Theme, corners: Corners) -> AnyElement {
             .child(bar(1.0, line)),
     )
     .child(
-        // Inset content card — the same rounded plate the real shell floats.
         div()
             .flex_1()
             .min_w_0()
@@ -107,9 +78,6 @@ fn miniature(theme: &Theme, corners: Corners) -> AnyElement {
     .into_any_element()
 }
 
-/// The System card: light on the left, dark on the right. Each half is a
-/// complete miniature clipped to its side, which is what makes the card read as
-/// "whichever one the system is on".
 fn miniature_split() -> AnyElement {
     div()
         .size_full()
@@ -132,10 +100,6 @@ fn miniature_split() -> AnyElement {
         .into_any_element()
 }
 
-/// The preview graphic for a mode.
-///
-/// The one place `Theme::light()`/`Theme::dark()` are legitimately built outside
-/// the installed global: a preview has to show the palette you are *not* using.
 fn preview(mode: AppearanceMode) -> AnyElement {
     match mode {
         AppearanceMode::System => miniature_split(),
@@ -144,11 +108,8 @@ fn preview(mode: AppearanceMode) -> AnyElement {
     }
 }
 
-/// Helper copy under the picker.
 fn helper(mode: AppearanceMode, system: Appearance) -> SharedString {
     match mode {
-        // Naming the resolved appearance makes "System" concrete — otherwise the
-        // card says nothing about what you actually get right now.
         AppearanceMode::System => {
             let resolved = if system.is_dark() { "dark" } else { "light" };
             format!(
@@ -237,8 +198,6 @@ mod tests {
         assert!(light.contains("currently light"), "got {light}");
     }
 
-    /// The pinned modes must not claim to follow anything — that copy is the only
-    /// thing telling the user the system setting is being ignored.
     #[test]
     fn pinned_helpers_do_not_mention_following() {
         for mode in [AppearanceMode::Light, AppearanceMode::Dark] {
@@ -250,9 +209,6 @@ mod tests {
         }
     }
 
-    /// The previews must differ from each other, or the picker is decoration.
-    /// Comparing the tones they are built from is the closest we can get without
-    /// a renderer.
     #[test]
     fn light_and_dark_previews_draw_from_different_palettes() {
         let (l, d) = (Theme::light(), Theme::dark());

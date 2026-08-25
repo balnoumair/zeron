@@ -1,6 +1,3 @@
-//! Settings → Archived (feature-inventory §1.5): archived chats across
-//! devices, with Unarchive (Mutate setChatArchived false).
-
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
@@ -11,7 +8,6 @@ use zeron_rpc::methods;
 use crate::state::AppState;
 use crate::theme::Theme;
 
-/// Archived rows in sidebar (recency) order. Pure.
 pub fn archived_chats(chats: &[Chat]) -> Vec<&Chat> {
     chats.iter().filter(|c| c.archived).collect()
 }
@@ -22,9 +18,6 @@ struct ArchivedProjectGroup {
     chats: Vec<Chat>,
 }
 
-/// Groups archived threads by their owning project while keeping each
-/// project's session order intact. A missing space remains visible under a
-/// truthful fallback heading instead of disappearing from history.
 fn archived_project_groups(chats: &[Chat], spaces: &[Space]) -> Vec<ArchivedProjectGroup> {
     let mut groups: Vec<ArchivedProjectGroup> = Vec::new();
     for chat in archived_chats(chats).into_iter().cloned() {
@@ -63,10 +56,7 @@ fn archived_project_groups(chats: &[Chat], spaces: &[Space]) -> Vec<ArchivedProj
 pub struct ArchivedPage {
     state: Entity<AppState>,
     error: Option<SharedString>,
-    /// Chat with an in-flight unarchive (button shows working state).
     busy: Option<String>,
-    /// Row index under the pointer — drives the original's `group-hover`
-    /// Unarchive reveal (`opacity-0 group-hover:opacity-100`).
     hovered: Option<usize>,
     task: Option<Task<()>>,
     _observe: Subscription,
@@ -174,8 +164,6 @@ impl Render for ArchivedPage {
                 let is_busy = busy.as_deref() == Some(chat.id.as_str());
                 let row_hovered = self.hovered == Some(ix);
                 let chat_id = chat.id.clone();
-                // Archived rows stay intentionally minimal: project grouping
-                // provides the context, while each row shows only its title.
                 items.push(
                     div()
                         .id(("archived-row", ix))
@@ -223,9 +211,6 @@ impl Render for ArchivedPage {
                             ),
                         )
                         .child(
-                            // Hidden until the row is hovered (zeron `opacity-0
-                            // group-hover:opacity-100`); hover fill is the solid
-                            // accent tone (`hover:bg-accent`).
                             div()
                                 .id(("unarchive", ix))
                                 .flex_none()
@@ -264,7 +249,6 @@ impl Render for ArchivedPage {
         }
 
         let body: AnyElement = if items.is_empty() {
-            // Centered empty state (zeron settings.archived.tsx).
             div()
                 .mt(px(96.0))
                 .flex()
@@ -273,8 +257,6 @@ impl Render for ArchivedPage {
                 .text_center()
                 .text_color(theme.text_muted.opacity(0.5))
                 .child(
-                    // `opacity-40` on top of the inherited muted/50 — an
-                    // effectively ~20% glyph (zeron settings.archived.tsx).
                     crate::icons::icon(crate::icons::ARCHIVE_MINIMALISTIC)
                         .size(px(28.0))
                         .text_color(theme.text_muted.opacity(0.2)),

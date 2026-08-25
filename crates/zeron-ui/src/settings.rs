@@ -1,10 +1,3 @@
-//! UI settings persisted to a small JSON file in the data dir — pane widths and
-//! collapse flags (zeron persisted the same set in localStorage).
-//!
-//! Loaded once at boot; saved debounced by the shell ([`SAVE_DEBOUNCE_MS`]).
-//! Corrupt or missing files fall back to defaults; loaded values are clamped so a
-//! hand-edited file can't wedge the layout.
-
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -20,25 +13,19 @@ pub mod notifications;
 pub mod shortcuts;
 pub mod widgets;
 
-/// Sidebar drag-resize bounds (px).
 pub const SIDEBAR_MIN: f32 = 208.0;
 pub const SIDEBAR_MAX: f32 = 400.0;
 pub const SIDEBAR_DEFAULT: f32 = 256.0;
 
-/// Right ("Changes") pane drag-resize bounds (px).
 pub const RIGHT_PANE_MIN: f32 = 360.0;
 pub const RIGHT_PANE_MAX: f32 = 760.0;
 pub const RIGHT_PANE_DEFAULT: f32 = 520.0;
 
-/// Terminal panel height bounds: 160px … 55% of the viewport (§1.10). The
-/// viewport-relative cap applies at runtime; the absolute cap here only heals
-/// hand-edited files.
 pub const TERMINAL_MIN_HEIGHT: f32 = 160.0;
 pub const TERMINAL_MAX_VH: f32 = 0.55;
 pub const TERMINAL_ABS_MAX_HEIGHT: f32 = 2000.0;
 pub const TERMINAL_DEFAULT_HEIGHT: f32 = 280.0;
 
-/// Debounce for settings writes after a drag/toggle.
 pub const SAVE_DEBOUNCE_MS: u64 = 400;
 
 const FILE_NAME: &str = "ui-settings.json";
@@ -48,51 +35,25 @@ const FILE_NAME: &str = "ui-settings.json";
 pub struct UiSettings {
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
-    /// Legacy: the grouped-by-project toggle predates spaces (which group by
-    /// folder inherently). Kept for file compatibility; no longer read.
     pub sidebar_grouped: bool,
-    /// The last selected space — restored on boot when the row still exists;
-    /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
-    /// Open session tabs in visual order (drag-reorder edits in place).
-    /// Device-local: a tab is a local viewport onto the synced session list —
-    /// closing one never archives the session. Ids of archived/deleted chats
-    /// are pruned against the doc ([`Shell::sync_open_tabs`]). `None` = file
-    /// written by a pre-tabs build; seeded once from the last space's sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_tabs: Option<Vec<String>>,
-    /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
-    /// Legacy: per-space tab order, from when tabs were the selected space's
-    /// non-archived sessions. Kept for file compatibility; no longer read.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub tab_order: std::collections::HashMap<String, Vec<String>>,
-    /// Legacy: manual sidebar space order, from when spaces were a sidebar
-    /// list. Kept for file compatibility; no longer read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space_order: Vec<String>,
-    /// Session notification chimes (done / awaiting-input). `ZERON_DISABLE_SOUND`
-    /// overrides.
     pub sound_enabled: bool,
-    /// Desktop banner notifications on the same transitions.
-    /// `ZERON_DISABLE_NOTIFICATIONS` overrides.
     pub notifications_enabled: bool,
-    /// Suppress the banner while a Zeron window is focused (the chime covers
-    /// the foreground case).
     pub notifications_background_only: bool,
     pub right_pane_width: f32,
-    /// Legacy: panel *open* flags are session-scoped in-memory state now
-    /// (`shell::SessionPanels`, zeron `sessionPanels` parity). Kept for file
-    /// compatibility; no longer read or written by the shell.
     pub right_pane_open: bool,
     pub terminal_height: f32,
-    /// Legacy — see [`Self::right_pane_open`].
     pub terminal_open: bool,
-    /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,
-    /// Light/dark preference. Defaults to following the OS.
     pub appearance: crate::appearance::AppearanceMode,
 }
 
@@ -120,11 +81,6 @@ impl Default for UiSettings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Keymap (customizable shortcuts, §1.4)
-// ---------------------------------------------------------------------------
-
-/// The rebindable app shortcuts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
     ToggleSidebar,
@@ -141,7 +97,6 @@ impl ShortcutId {
         ShortcutId::NewSession,
     ];
 
-    /// Row label (zeron lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
             ShortcutId::ToggleSidebar => "Toggle left sidebar",
@@ -161,8 +116,6 @@ impl ShortcutId {
     }
 }
 
-/// Persisted shortcut combos. Stored platform-neutral ("mod-s"); translated to
-/// "cmd-s"/"ctrl-s" at bind time by [`platform_combo`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KeymapConfig {
@@ -207,9 +160,6 @@ impl KeymapConfig {
     }
 }
 
-/// Build a combo string from a recorded keystroke. The primary modifier
-/// (cmd on macOS, ctrl elsewhere — either recorded key maps in) becomes "mod";
-/// bare modifier presses record nothing.
 pub fn combo_from_keystroke(
     ctrl: bool,
     alt: bool,
@@ -240,7 +190,6 @@ pub fn combo_from_keystroke(
     Some(parts.join("-"))
 }
 
-/// Shortcut ids whose combos collide with another shortcut (conflict detection).
 pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
     ShortcutId::ALL
         .into_iter()
@@ -254,7 +203,6 @@ pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
         .collect()
 }
 
-/// Translate a stored combo into a bindable keystroke for this platform.
 pub fn platform_combo(combo: &str) -> String {
     let primary = if cfg!(target_os = "macos") {
         "cmd"
@@ -268,7 +216,6 @@ pub fn platform_combo(combo: &str) -> String {
         .join("-")
 }
 
-/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S").
 pub fn display_combo(combo: &str) -> String {
     combo
         .split('-')
@@ -295,7 +242,6 @@ pub fn display_combo(combo: &str) -> String {
 }
 
 impl UiSettings {
-    /// Clamp widths into their legal ranges (also heals NaN to defaults).
     pub fn clamped(mut self) -> Self {
         self.sidebar_width = clamp_or(
             self.sidebar_width,
@@ -318,7 +264,6 @@ impl UiSettings {
         self
     }
 
-    /// Load from `{data_dir}/ui-settings.json`; defaults on any failure.
     pub fn load(data_dir: &Path) -> Self {
         match std::fs::read_to_string(Self::path(data_dir)) {
             Ok(text) => match serde_json::from_str::<UiSettings>(&text) {
@@ -332,7 +277,6 @@ impl UiSettings {
         }
     }
 
-    /// Write atomically (temp file + rename) so a crash mid-write never corrupts.
     pub fn save(&self, data_dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(data_dir)?;
         let path = Self::path(data_dir);
@@ -392,9 +336,6 @@ mod tests {
         assert_eq!(UiSettings::load(dir.path()), settings);
     }
 
-    /// A settings file written before light mode existed has no `appearance`
-    /// key; it must load as "follow the OS" rather than failing the whole parse
-    /// and resetting every other preference to defaults.
     #[test]
     fn settings_without_appearance_default_to_system() {
         let dir = tempfile::tempdir().unwrap();
@@ -471,7 +412,6 @@ mod tests {
 
     #[test]
     fn combo_recording() {
-        // Primary modifier (ctrl or cmd) normalizes to "mod".
         assert_eq!(
             combo_from_keystroke(true, false, false, false, "s"),
             Some("mod-s".into())
@@ -484,12 +424,10 @@ mod tests {
             combo_from_keystroke(true, true, true, false, "K"),
             Some("mod-alt-shift-k".into())
         );
-        // Plain keys record without modifiers (Esc is filtered by the caller).
         assert_eq!(
             combo_from_keystroke(false, false, false, false, "f5"),
             Some("f5".into())
         );
-        // Bare modifier presses record nothing.
         assert_eq!(
             combo_from_keystroke(true, false, false, false, "ctrl"),
             None
@@ -537,7 +475,6 @@ mod tests {
 
     #[test]
     fn keymap_survives_old_settings_files() {
-        // Files written before the keymap existed load with defaults.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(UiSettings::path(dir.path()), r#"{"sidebarWidth": 300}"#).unwrap();
         let loaded = UiSettings::load(dir.path());

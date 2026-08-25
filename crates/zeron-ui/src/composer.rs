@@ -1,12 +1,3 @@
-//! The composer: a hand-rolled multiline text input (adapted from gpui's
-//! `examples/input.rs`), the compact↔expanded flip, the Send/Steer/Stop morph,
-//! optimistic send with failure recovery, per-chat drafts, and the question
-//! wizard that replaces the composer while a run awaits input.
-//!
-//! Pure decision logic (flip, auto-grow math, button morph, wizard reducer,
-//! pending-input detection) lives in free functions/structs with unit tests;
-//! the gpui element only feeds them measurements.
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -37,61 +28,23 @@ use crate::pickers::Pickers;
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
-// ---------------------------------------------------------------------------
-// Constants + pure decision logic
-// ---------------------------------------------------------------------------
-
-/// Expanded-mode textarea vertical padding: `pt-4 pb-1` (zeron composer.tsx
-/// line 578) = 16 + 4.
 pub const TEXTAREA_PAD_V: f32 = 20.0;
-/// The expanded textarea BOX (content + padding) is clamped by the original's
-/// auto-grow effect: `ta.style.height = Math.min(Math.max(scrollHeight, 76),
-/// 260)` (zeron composer.tsx line 235). The 76px floor applies even when
-/// empty — it's what makes the always-expanded new-chat composer tall.
 pub const TEXTAREA_MIN: f32 = 76.0;
 pub const TEXTAREA_MAX: f32 = 260.0;
-/// Expanded actions row: `pt-1` (4) + h-8 picker chips (32 — the tallest
-/// children; composer/styles.tsx pickerChip) + `pb-2.5` (10) — zeron
-/// composer-actions.tsx line 60.
 pub const ACTIONS_ROW_HEIGHT: f32 = 46.0;
-/// The pill's 1px hairline, top + bottom (`rounded-[26px] border`).
 pub const PILL_BORDER_V: f32 = 2.0;
-/// Expanded composer bounds, border-box: 76 + 46 + 2 = 124 when empty (the
-/// new-chat canvas), 260 + 46 + 2 = 308 at the content cap.
 pub const COMPOSER_MIN_HEIGHT: f32 = TEXTAREA_MIN + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
 pub const COMPOSER_MAX_HEIGHT: f32 = TEXTAREA_MAX + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
-/// Compact pill, border-box: one-line textarea `py-3` (24) + one 22.75px line
-/// (scrollHeight rounds to 47 in the original) + the 2px hairline = 49. The
-/// compact cluster (`py-1.5` + h-8 = 44) is shorter, so the textarea wins.
 pub const COMPACT_TOTAL_HEIGHT: f32 = 49.0;
-/// Below this pill input width the composer always expands.
 pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
-/// Input text metrics: `text-[14px] leading-relaxed` = 14 × 1.625 = 22.75.
 pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
-/// Single-select questions auto-advance after this long.
 pub const AUTO_ADVANCE_MS: u64 = 220;
-/// Drag-selection autoscroll runs at the display-friendly 60fps cadence.
 pub const DRAG_SCROLL_FRAME_MS: u64 = 16;
 
-/// Hysteresis slack for the expanded→compact flip: once expanded, the composer
-/// only collapses when the text is comfortably narrower than the compact
-/// capacity — expanding and collapsing share no boundary, so a width right at
-/// the flip threshold can't oscillate between the two layouts.
 pub const COLLAPSE_HYSTERESIS: f32 = 32.0;
-/// During an interactive window resize the current mode is frozen until the
-/// measured widths have been stable this long.
 pub const RESIZE_SETTLE_MS: u64 = 150;
 
-/// Compact↔expanded flip with hysteresis. `capacity` is the *compact-mode*
-/// input capacity (a layout-stable width: measured while compact, tracked by
-/// container-width deltas while expanded — never the post-flip measured width,
-/// which differs per mode and would feed back into the decision):
-/// - a newline always expands;
-/// - while `resizing`, the current mode is kept (no flip until sizes settle);
-/// - a too-narrow pill (`capacity < MIN_COMPACT_INPUT_WIDTH`) always expands;
-/// - compact expands only when `text_width > capacity`; expanded collapses
-///   only when `text_width < capacity - COLLAPSE_HYSTERESIS`.
 pub fn composer_flip(
     expanded: bool,
     text_width: f32,
@@ -115,25 +68,16 @@ pub fn composer_flip(
     }
 }
 
-/// Caret blink half-period (standard textarea cadence: ~500ms on / 500ms off).
 pub const CARET_BLINK_MS: u64 = 500;
 
-/// Caret blink phase for a time since the last keystroke/caret move: solid
-/// through the first half-period (typing bursts never blink — each keystroke
-/// resets the phase), then alternating.
 pub fn caret_visible(ms_since_activity: u64) -> bool {
     (ms_since_activity / CARET_BLINK_MS) % 2 == 0
 }
 
-/// Auto-grow: content height for a wrapped-line count.
 pub fn input_content_height(wrapped_lines: usize) -> f32 {
     wrapped_lines.max(1) as f32 * INPUT_LINE_HEIGHT
 }
 
-/// Total expanded composer height (border-box) for a content height: the
-/// textarea BOX (content + `pt-4 pb-1`) clamps to 76–260 exactly like the
-/// original's auto-grow effect, then the 46px actions row and the hairline
-/// ride on top. Range 124–308.
 pub fn composer_total_height(content_height: f32) -> f32 {
     (content_height + TEXTAREA_PAD_V).clamp(TEXTAREA_MIN, TEXTAREA_MAX)
         + ACTIONS_ROW_HEIGHT
@@ -144,8 +88,6 @@ fn input_max_scroll(content_height: f32, viewport_height: f32) -> f32 {
     (content_height - viewport_height).max(0.0)
 }
 
-/// Apply GPUI's wheel delta to a top-origin input offset. Positive deltas mean
-/// scrolling toward the start, matching gpui's built-in list/div behavior.
 fn input_scroll_offset(
     current: f32,
     delta_y: f32,
@@ -155,7 +97,6 @@ fn input_scroll_offset(
     (current - delta_y).clamp(0.0, input_max_scroll(content_height, viewport_height))
 }
 
-/// Minimally adjust the viewport so the caret row is fully visible.
 fn input_scroll_offset_for_cursor(
     current: f32,
     cursor_top: f32,
@@ -172,8 +113,6 @@ fn input_scroll_offset_for_cursor(
     next.clamp(0.0, input_max_scroll(content_height, viewport_height))
 }
 
-/// Per-frame drag-selection scroll. Distance increases speed, capped at one
-/// text row per frame so crossing the input boundary never causes a jump.
 fn input_drag_scroll_delta(
     pointer_y: f32,
     viewport_top: f32,
@@ -190,16 +129,11 @@ fn input_drag_scroll_delta(
     distance.signum() * (distance.abs() * 0.2).clamp(1.0, line_height)
 }
 
-/// Staged-attachment strip metrics (zeron attachment-ui.tsx AttachmentStrip:
-/// `flex flex-wrap gap-2 px-4 pt-3`, `size-14` thumbs).
 pub const STRIP_THUMB: f32 = 56.0;
 pub const STRIP_GAP: f32 = 8.0;
 pub const STRIP_PAD_TOP: f32 = 12.0;
 pub const STRIP_PAD_X: f32 = 16.0;
 
-/// Height the wrap strip adds to the pill for `count` staged thumbnails at an
-/// `inner_width` pill content width (0 when empty). Mirrors flex-wrap: as many
-/// 56px thumbs per row as fit with 8px gaps inside the 16px side insets.
 pub fn attachment_strip_height(count: usize, inner_width: f32) -> f32 {
     if count == 0 {
         return 0.0;
@@ -217,38 +151,18 @@ pub fn comment_strip_height(count: usize) -> f32 {
     STRIP_PAD_TOP + crate::badges::BADGE_HEIGHT
 }
 
-/// Compact↔expanded flip morph (round 9): the flip used to snap between the
-/// two pill layouts. The original has no height transition (its shell carries
-/// only `transition-colors`), so this is a native nicety: ONE committed flip
-/// starts exactly one 180ms ease-out morph ([`motion::COLLAPSE`], the same
-/// manual-drive pattern as shell.rs `WidthTween` — never `with_animation`,
-/// whose element-id keying replays tweens on remount, round-6 §1–3).
-///
-/// The morph animates the pill's COMMITTED height: the flip commits its final
-/// layout immediately (the input entity never remounts — the caret survives,
-/// exactly as before) while the pill clips toward the live target. The pill's
-/// bottom edge is stationary on screen, so the controls stay pinned to it
-/// (constant screen-y; see the anchoring helpers below) and only the text
-/// glides with the sweeping top edge. [`composer_flip`]'s hysteresis already
-/// guarantees no oscillation at the boundary, and [`flip_morph_step`] never
-/// restarts a morph while the committed mode holds. Reduced motion snaps: no
-/// morph is ever created.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlipMorph {
-    /// Rendered height when the flip committed — the animation's start point.
     pub from: f32,
-    /// Commit time in ms on the caller's monotonic clock.
     pub start_ms: f32,
 }
 
 impl FlipMorph {
-    /// Raw timeline position 0..1 over [`motion::COLLAPSE`]'s 180ms.
     fn raw(&self, now_ms: f32) -> f32 {
         let total = motion::COLLAPSE.total().as_secs_f32() * 1000.0;
         ((now_ms - self.start_ms) / total).clamp(0.0, 1.0)
     }
 
-    /// Eased progress 0..1 (ease-out) — also drives the actions fade.
     pub fn progress(&self, now_ms: f32) -> f32 {
         motion::COLLAPSE.progress(self.raw(now_ms))
     }
@@ -257,40 +171,15 @@ impl FlipMorph {
         self.raw(now_ms) >= 1.0
     }
 
-    /// Committed-height evaluation: eased lerp from the flip-time height to
-    /// the LIVE target (auto-grow may move the target mid-morph — the morph
-    /// tracks it instead of finishing on a stale height).
     pub fn height(&self, target: f32, now_ms: f32) -> f32 {
         motion::lerp(self.from, target, self.progress(now_ms))
     }
 }
 
-// -- morph anchoring (round-9 follow-up) ------------------------------------
-// The pill sits at the BOTTOM of the shell column: growing it moves its TOP
-// edge; the bottom edge is stationary on screen. The first morph cut anchored
-// the pill's inner content to the top, so the actions/cluster (laid out at
-// the inner bottom) rode the animating height up and down. The controls are
-// therefore pinned to the stationary bottom edge (absolute bottom row when
-// expanded, a bottom-justified row when compact) and only the TEXT glides
-// with the sweeping top edge. The helpers below are the pure math.
-
-/// Send/attach center sits 27px above the pill's outer bottom in expanded
-/// mode (`pb-2.5` 10 + half the 32px content zone + 1px hairline) but 24.5px
-/// in compact (centered in the 47px row) — an inherent 2.5px delta between
-/// the two SOURCE geometries. The morph glides it instead of snapping.
 pub const CLUSTER_Y_DELTA: f32 = 2.5;
 
-/// The cluster's INTERNAL spacing is mode-independent in the source — it is
-/// ONE element (`clusterRef`: `gap-1` chips + `ml-1` attach) reused by both
-/// layouts, so inter-button distances never change across the flip (round 9:
-/// branch-specific gaps read as a horizontal compression pulse mid-morph).
-/// Only the wrapper's right inset differs: `pr-2` (8) compact vs `px-3` (12)
-/// expanded — a whole-cluster 4px shift that glides with the morph.
 pub const CLUSTER_X_DELTA: f32 = 4.0;
 
-/// The right inset for the in-flight morph: eases from the OLD mode's resting
-/// inset to the committed mode's (compact 8 ↔ expanded 12) — pairwise button
-/// distances stay constant; the cluster glides as one.
 pub fn morph_cluster_inset(expanded: bool, progress: f32) -> f32 {
     let (from, to) = if expanded {
         (8.0, 8.0 + CLUSTER_X_DELTA)
@@ -300,49 +189,20 @@ pub fn morph_cluster_inset(expanded: bool, progress: f32) -> f32 {
     motion::lerp(from, to, progress)
 }
 
-/// Expanded text top padding across the morph: starts at the compact resting
-/// inset (12 ≈ `py-3`) and eases to `pt-4` (16) — the first line glides with
-/// the rising top edge instead of jumping at the commit.
 pub fn morph_text_pad(progress: f32) -> f32 {
     motion::lerp(12.0, 16.0, progress)
 }
 
-/// Collapse-morph text glide: the committed compact row is bottom-anchored
-/// (text resting top = 36px above the pill's outer bottom: 49 − 1 hairline −
-/// 12 centering inset), while at the commit instant the text sat 17px below
-/// the expanded pill's top (1 hairline + 16 `pt-4`) — i.e. `from − 17` above
-/// the bottom. The decaying relative offset walks it down smoothly.
 pub fn collapse_text_glide(from: f32, progress: f32) -> f32 {
     (from - 53.0).max(0.0) * (1.0 - progress)
 }
 
-/// The decaying [`CLUSTER_Y_DELTA`] offset for the in-flight morph.
-/// The whole control cluster — chips AND attach/send — rides the stationary
-/// bottom anchor at FULL alpha throughout (round-9 follow-up: any fade on the
-/// picker chips read as flicker; their screen position is near-stationary
-/// across the flip, so nothing needs to be hidden).
 pub fn morph_cluster_dy(progress: f32) -> f32 {
     CLUSTER_Y_DELTA * (1.0 - progress)
 }
 
-/// Session/route changes SNAP the composer (same rule as the header inset
-/// tween, round 6: route swaps remount in the original — zero motion). The
-/// nav-driven flip doesn't commit on the first render after a switch (the
-/// draft swap has to be laid out and re-measured first), so a plain reset at
-/// the nav instant leaks: `last_rendered_height` is repopulated before the
-/// flip lands and the session change morphs 49↔124. Instead, every flip
-/// committed within this wall-clock window of a navigation snaps. User-driven
-/// flips need typing and can't land this fast after a switch.
 pub const ROUTE_SNAP_MS: u64 = 250;
 
-/// Advance the flip morph across one render pass. While the committed mode
-/// holds, the morph is kept (a finished one clears) — same-mode renders can
-/// NEVER restart the animation. A committed mode change starts one morph from
-/// the last rendered height, which mid-flight is the CURRENT animated height,
-/// so a reverse flip hands off seamlessly instead of popping to an endpoint.
-/// Reduced motion (or a first paint with no measured height yet) snaps, and
-/// `route_snap` (a session/route change within [`ROUTE_SNAP_MS`]) both blocks
-/// arming AND kills anything in flight — navigation never animates the pill.
 pub fn flip_morph_step(
     morph: Option<FlipMorph>,
     mode_changed: bool,
@@ -366,20 +226,13 @@ pub fn flip_morph_step(
     })
 }
 
-/// What the send button is right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendButtonMode {
-    /// No live run: plain send.
     Send,
-    /// Live steerable run with text typed: "Send (steers the current run)".
     Steer,
-    /// Live run, nothing typed: red stop square.
     Stop,
 }
 
-/// What the composer holds that a send could carry. A staged image or diff
-/// comment counts: both synthesize their own prompt body, so either alone is
-/// a legal send — and during a live run has to read as Steer, not Stop.
 pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> bool {
     !text.trim().is_empty() || attachments > 0 || comments > 0
 }
@@ -392,18 +245,6 @@ pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     }
 }
 
-/// Find the unresolved input request the panel should serve, if any: an
-/// unresolved input part on the LAST assistant entry — regardless of the
-/// entry's run status. The question stays answerable until the user actually
-/// answers it (user requirement): a run that died under its question (engine
-/// restart reaping it) leaves an aborted entry whose answer the engine
-/// delivers as a resumed turn (`RespondInput`'s dead-run fallback). A newer
-/// assistant entry supersedes an unanswered question. Assistant-entry-scoped,
-/// not last-entry: a steer prompt sent while the agent waits appends a USER
-/// entry after the streaming assistant entry, and a last-entry-only read made
-/// the QuestionPanel vanish exactly when the user typed (earlier forensics;
-/// matches the original composer.tsx, which reads the live-assistant fold —
-/// rebuilt from replay even after the run died).
 pub fn pending_input_request(
     transcript: &[SessionMessageEntry],
 ) -> Option<(String, Vec<UserInputQuestion>)> {
@@ -424,8 +265,6 @@ pub fn pending_input_request(
         })
 }
 
-/// Whether the transcript shows `request_id` explicitly resolved (here or on
-/// another device) — the wizard latch's release condition.
 pub fn input_request_resolved(transcript: &[SessionMessageEntry], request_id: &str) -> bool {
     transcript.iter().any(|entry| {
         entry.parts.iter().any(|part| {
@@ -441,22 +280,13 @@ pub fn input_request_resolved(transcript: &[SessionMessageEntry], request_id: &s
     })
 }
 
-// ---------------------------------------------------------------------------
-// Question wizard (pure reducer)
-// ---------------------------------------------------------------------------
-
-/// Reducer outcome of a wizard interaction.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WizardStep {
     Stay,
-    /// Single-select landed — advance after [`AUTO_ADVANCE_MS`].
     AutoAdvance,
-    /// All pages answered — submit these answers.
     Done(Vec<UserInputAnswer>),
 }
 
-/// Paged question state ("1/3"): single-select auto-advances, multi-select and
-/// typed answers advance explicitly, number keys 1-9 select, Back pages back.
 #[derive(Debug, Clone)]
 pub struct Wizard {
     pub request_id: String,
@@ -492,12 +322,10 @@ impl Wizard {
             .is_some_and(|p| p.contains(&option_ix))
     }
 
-    /// Whether the current page has any picked option.
     pub fn page_has_pick(&self) -> bool {
         self.picked.get(self.page).is_some_and(|p| !p.is_empty())
     }
 
-    /// Click/tap an option.
     pub fn select(&mut self, option_ix: usize) -> WizardStep {
         let Some(question) = self.questions.get(self.page) else {
             return WizardStep::Stay;
@@ -523,7 +351,6 @@ impl Wizard {
         }
     }
 
-    /// Number key 1-9.
     pub fn press_number(&mut self, number: usize) -> WizardStep {
         if number == 0 {
             return WizardStep::Stay;
@@ -537,7 +364,6 @@ impl Wizard {
         }
     }
 
-    /// Explicit submit / auto-advance landing.
     pub fn advance(&mut self) -> WizardStep {
         if self.page + 1 < self.questions.len() {
             self.page += 1;
@@ -547,7 +373,6 @@ impl Wizard {
         }
     }
 
-    /// Page back; false when already on the first page.
     pub fn back(&mut self) -> bool {
         if self.page > 0 {
             self.page -= 1;
@@ -557,7 +382,6 @@ impl Wizard {
         }
     }
 
-    /// Answers per question: free text overrides picked labels.
     pub fn answers(&self) -> Vec<UserInputAnswer> {
         self.questions
             .iter()
@@ -585,10 +409,6 @@ impl Wizard {
             .collect()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Multiline text input (adapted from gpui examples/input.rs)
-// ---------------------------------------------------------------------------
 
 actions!(
     composer,
@@ -632,29 +452,16 @@ actions!(
     ]
 );
 
-/// How long a run of single-character edits keeps merging into one undo step.
-/// A pause longer than this starts a fresh step, so undo rewinds in the
-/// bursts the user actually typed rather than one character at a time.
 const UNDO_COALESCE: Duration = Duration::from_millis(700);
 
-/// Cap on retained undo steps — a long-lived composer must not grow forever.
 const UNDO_LIMIT: usize = 200;
 
-/// The literal `@` a chip displays before its file name. Projected as TEXT so
-/// it shapes, wraps, and hit-tests with the label — the earlier SVG icons
-/// painted into a reserved whitespace slot never sat right at text size
-/// (user report). Chips read as inline code: `@name` in the mono font over
-/// the code wash.
 const MENTION_PREFIX: char = '@';
 const MENTION_TOOLTIP_DELAY: Duration = Duration::from_millis(420);
 const MENTION_TOOLTIP_HEIGHT: f32 = 24.0;
 const MENTION_SIDE_PAD: &str = "\u{00A0}";
-/// A private URI scheme keeps file mentions distinguishable from ordinary
-/// Markdown links pasted into the composer.
 const FILE_MENTION_SCHEME: &str = "zeron-file:";
 
-/// A restorable point in the input's history: text plus where the caret and
-/// selection sat when the edit landed.
 #[derive(Clone)]
 struct EditSnapshot {
     content: String,
@@ -662,9 +469,6 @@ struct EditSnapshot {
     selection_reversed: bool,
 }
 
-/// A strict, local-only Markdown representation of a file mention. The
-/// underlying prompt always contains this form; the editor projects it to a
-/// chip for display without leaking a second data model into submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileMentionLink {
     range: Range<usize>,
@@ -800,8 +604,6 @@ struct TextProjection {
     mentions: Vec<(FileMentionLink, Range<usize>)>,
 }
 
-/// A path alone is not enough: two identical relative paths can appear in a
-/// draft, so the raw range remains part of the hover identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MentionTooltipTarget {
     range: Range<usize>,
@@ -830,9 +632,6 @@ impl MentionTooltipPhase {
     }
 }
 
-/// Pure tooltip lifecycle reducer. Motion within the same chip preserves both
-/// waiting and visible phases, so normal pointer jitter cannot starve the
-/// delay or flicker an already-visible tooltip.
 fn mention_tooltip_reduce(
     phase: MentionTooltipPhase,
     pointer_target: Option<MentionTooltipTarget>,
@@ -908,11 +707,6 @@ impl TextProjection {
         for (link, label) in links.into_iter().zip(labels) {
             projection.display.push_str(&raw[raw_at..link.range.start]);
             let display_start = projection.display.len();
-            // The chip is plain projected text — `@` plus the label between
-            // non-breaking side bearings; the rounded code wash beneath it is
-            // painted by `ComposerTextElement::paint`. Every character here
-            // must exist in Geist (no exotic whitespace — U+2003/U+202F shape
-            // at fallback width and collapsed the chip once already).
             projection.display.push_str(MENTION_SIDE_PAD);
             projection.display.push(MENTION_PREFIX);
             for ch in label.chars() {
@@ -1005,9 +799,6 @@ impl TextProjection {
     }
 }
 
-/// Basenames are compact in the common case. When the same basename appears
-/// more than once, use the shortest unique path suffix so chips remain
-/// distinguishable without always expanding to full paths.
 fn mention_display_labels(links: &[FileMentionLink]) -> Vec<String> {
     links
         .iter()
@@ -1041,22 +832,13 @@ fn mention_display_labels(links: &[FileMentionLink]) -> Vec<String> {
         .collect()
 }
 
-/// One chip in a *sent* message: its byte range over the projected display
-/// string (`@label` between side bearings). The transcript renders these
-/// read-only — no editing state, no tooltip machinery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentMentionSpan {
     pub range: Range<usize>,
-    /// Full workspace-relative path (labels can be shortened to basenames).
     pub path: SharedString,
     pub is_dir: bool,
 }
 
-/// Project a sent message's raw Markdown for transcript display: mention links
-/// collapse to the same chip labels the composer shows, everything else passes
-/// through untouched. `None` when the text has no valid mention — the
-/// substring probe keeps ordinary prompts on the zero-allocation path, so this
-/// is safe to call for every user row.
 pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)> {
     if !raw.contains(FILE_MENTION_SCHEME) {
         return None;
@@ -1081,14 +863,12 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
     Some((projection.display, spans))
 }
 
-/// Direction of the last edit — a run only merges with edits of its own kind.
 #[derive(Clone, Copy, PartialEq)]
 enum EditKind {
     Insert,
     Delete,
 }
 
-/// Bind the composer keymap. Call once at app boot.
 pub fn init(cx: &mut App) {
     let ctx = Some("Composer");
     let mut bindings = vec![
@@ -1110,8 +890,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("shift-home", SelectHome, ctx),
         KeyBinding::new("shift-end", SelectEnd, ctx),
-        // macOS line/document motion — a laptop keyboard has no home/end keys,
-        // so Cmd+arrow is the only way users reach either edge.
         KeyBinding::new("cmd-left", Home, ctx),
         KeyBinding::new("cmd-right", End, ctx),
         KeyBinding::new("cmd-up", DocStart, ctx),
@@ -1120,7 +898,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-cmd-right", SelectEnd, ctx),
         KeyBinding::new("shift-cmd-up", SelectDocStart, ctx),
         KeyBinding::new("shift-cmd-down", SelectDocEnd, ctx),
-        // Line-edge deletion (Cmd+Delete on macOS).
         KeyBinding::new("cmd-backspace", DeleteToLineStart, ctx),
         KeyBinding::new("cmd-delete", DeleteToLineEnd, ctx),
     ];
@@ -1128,7 +905,6 @@ pub fn init(cx: &mut App) {
         bindings.push(KeyBinding::new(&format!("{prefix}-z"), Undo, ctx));
         bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, ctx));
     }
-    // Word-level editing: Option on macOS, Ctrl on Windows/Linux.
     let word_edit_prefix = if cfg!(target_os = "macos") {
         "alt"
     } else {
@@ -1170,11 +946,6 @@ pub fn init(cx: &mut App) {
         bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, ctx));
         bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, ctx));
     }
-    // Palette-search context: TEXT-EDITING keys only. gpui dispatches matched
-    // keybindings BEFORE raw key listeners (window.rs `dispatch_key_event`),
-    // so anything bound here can never reach a palette's `on_key_down` —
-    // navigation keys (up/down/left/right/enter) are deliberately unbound and
-    // bubble to the palette frame instead.
     let palette = Some("PaletteSearch");
     let mut palette_bindings = vec![
         KeyBinding::new("backspace", Backspace, palette),
@@ -1183,8 +954,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("end", End, palette),
         KeyBinding::new("shift-left", SelectLeft, palette),
         KeyBinding::new("shift-right", SelectRight, palette),
-        // Modifier-qualified motion is safe here: the palette's own navigation
-        // uses BARE arrows/enter, which stay unbound and bubble to its frame.
         KeyBinding::new("cmd-left", Home, palette),
         KeyBinding::new("cmd-right", End, palette),
         KeyBinding::new("shift-cmd-left", SelectHome, palette),
@@ -1233,7 +1002,6 @@ pub fn init(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
-/// Events the composer wrapper listens for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerInputEvent {
     Submitted,
@@ -1243,18 +1011,11 @@ pub enum ComposerInputEvent {
     MentionNavigate(isize),
     MentionAccept,
     MentionDismiss,
-    /// Images pasted from the clipboard (screenshots / copied image data) —
-    /// the wrapper stages them as attachments (use-attachments.ts onPaste).
     PastedImages(Vec<gpui::Image>),
-    /// File paths pasted from the clipboard (a file manager "Copy").
     PastedPaths(Vec<PathBuf>),
 }
 
-/// Multiline input entity: content + selection + IME marked text + measured
-/// layout (wrapped lines) for mouse mapping and auto-grow.
 pub struct ComposerInput {
-    /// Key context for the binding map ("Composer", or "PaletteSearch" for
-    /// palette filters whose navigation keys must bubble).
     key_context: &'static str,
     focus_handle: FocusHandle,
     content: String,
@@ -1266,12 +1027,8 @@ pub struct ComposerInput {
     drag_position: Option<Point<Pixels>>,
     drag_generation: u64,
     drag_autoscroll_active: bool,
-    /// Vertical scroll inside the input once content exceeds the max height.
     scroll_top: f32,
-    /// Normally keeps the caret visible through edits and rewraps. Manual
-    /// wheel scrolling pauses it until the next caret move or edit.
     follow_cursor: bool,
-    // -- measured state (written during layout/paint) --
     last_lines: Vec<WrappedLine>,
     line_starts: Vec<usize>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -1279,45 +1036,23 @@ pub struct ComposerInput {
     content_height: f32,
     max_line_width: f32,
     last_width: f32,
-    /// Raw Markdown → chip display projection from the last layout pass.
     projection: TextProjection,
-    /// Inline completion preview: painted in faint ink after the text while
-    /// the caret sits at the end (palette tab-completion). Owned by the
-    /// wrapper — it recomputes and re-sets this on every render pass, so the
-    /// input never has to know what the completion means.
     ghost: Option<SharedString>,
-    /// File mentions are a composer feature, not a behavior of generic inputs
-    /// (picker searches and rename fields also use this type).
     mentions_enabled: bool,
-    /// Bumped once per `layout_text` pass — the flip logic uses it to apply at
-    /// most one compact↔expanded flip per layout (a flip is only re-evaluated
-    /// after the input has been measured in the new mode).
     layout_epoch: u64,
     display_is_placeholder: bool,
-    /// Caret blink anchor: reset on every keystroke/caret move so the caret is
-    /// solid while typing and blinks at [`CARET_BLINK_MS`] when idle.
     blink_anchor: Instant,
-    /// Half-period repaint driver, alive only while the input is focused.
     blink_task: Option<Task<()>>,
-    // -- undo history --
     undo_stack: Vec<EditSnapshot>,
     redo_stack: Vec<EditSnapshot>,
-    /// Kind, trailing offset, and time of the last edit — the merge test that
-    /// decides whether the next edit extends the current undo step.
     last_edit: Option<(EditKind, usize, Instant)>,
-    /// The wrapper owns mention state; this only redirects bound keys while a
-    /// mention token is active, keeping input focus and native text editing.
     mention_open: bool,
     mention_has_selection: bool,
-    /// Last prepainted chip bounds; the paint-phase pointer listener uses
-    /// these instead of attempting to infer text geometry from the cursor.
     mention_hits: Vec<MentionHit>,
     mention_tooltip: MentionTooltipPhase,
     mention_tooltip_generation: u64,
     mention_tooltip_popup: Option<Bounds<Pixels>>,
     mention_tooltip_task: Option<Task<()>>,
-    /// Created once when Waiting promotes; retaining this entity preserves
-    /// GPUI's global animation state across prepaint frames.
     mention_tooltip_view: Option<Entity<MentionPathTooltip>>,
 }
 
@@ -1326,9 +1061,6 @@ impl ComposerInput {
         Self::with_context(placeholder, "Composer", cx)
     }
 
-    /// An input in a custom KEY context — palettes use `"PaletteSearch"`,
-    /// whose keymap binds only text-editing keys so navigation keys bubble to
-    /// the surrounding frame (see `init`).
     pub fn with_context(
         placeholder: impl Into<SharedString>,
         key_context: &'static str,
@@ -1376,15 +1108,10 @@ impl ComposerInput {
         }
     }
 
-    /// Reset the caret blink phase (solid again) — called on every edit and
-    /// caret move, matching textarea behavior.
     fn reset_blink(&mut self) {
         self.blink_anchor = Instant::now();
     }
 
-    /// Caret paint gate: focused input in an active window, in the "on" blink
-    /// phase. Also (re)arms the half-period repaint driver while focused, and
-    /// drops it on blur so an unfocused input schedules no frames.
     fn caret_shown(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
         let focused = self.focus_handle.is_focused(window);
         if !focused || !window.is_window_active() {
@@ -1440,7 +1167,6 @@ impl ComposerInput {
         };
     }
 
-    /// Replace a completed `@query` token as one non-coalescing undo step.
     pub fn replace_mention(
         &mut self,
         range: Range<usize>,
@@ -1471,9 +1197,6 @@ impl ComposerInput {
         cx.notify();
     }
 
-    /// Replace a completed plain-text token (slash commands) as one
-    /// non-coalescing undo step. Unlike [`Self::replace_mention`], the
-    /// replacement is ordinary text — no link, no chip projection.
     pub fn replace_plain_token(
         &mut self,
         range: Range<usize>,
@@ -1505,8 +1228,6 @@ impl ComposerInput {
         self.content.is_empty()
     }
 
-    /// Set (or clear) the inline completion preview. Only paints while the
-    /// caret sits at the end of a non-empty draft — see the prepaint gate.
     pub fn set_ghost(&mut self, ghost: Option<SharedString>, cx: &mut Context<Self>) {
         if self.ghost == ghost {
             return;
@@ -1519,7 +1240,6 @@ impl ComposerInput {
         self.content.contains('\n')
     }
 
-    /// Unwrapped width of the widest line — feeds the compact/expanded flip.
     pub fn measured_text_width(&self) -> f32 {
         self.max_line_width
     }
@@ -1547,8 +1267,6 @@ impl ComposerInput {
         self.marked_range = None;
         self.scroll_top = 0.0;
         self.follow_cursor = true;
-        // Programmatic replacement (draft load, clear-on-submit) is a new
-        // document, not an edit — undo must not reach back past it.
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_edit = None;
@@ -1682,8 +1400,6 @@ impl ComposerInput {
         }
     }
 
-    // ---- undo history ----
-
     fn snapshot(&self) -> EditSnapshot {
         EditSnapshot {
             content: self.content.clone(),
@@ -1692,18 +1408,12 @@ impl ComposerInput {
         }
     }
 
-    /// Called with the range about to be replaced, BEFORE the content changes,
-    /// so the pushed snapshot is the pre-edit state.
     fn record_edit(&mut self, range: &Range<usize>, new_text: &str) {
         let kind = if new_text.is_empty() {
             EditKind::Delete
         } else {
             EditKind::Insert
         };
-        // A run merges only while it stays single-character, contiguous with
-        // the previous edit, of the same kind, and inside the idle window. A
-        // pause, a word break, a paste, or a caret jump all break the run so
-        // undo lands on a boundary the user recognizes.
         let mergeable = match (kind, &self.last_edit) {
             (EditKind::Insert, Some((EditKind::Insert, at, when))) => {
                 range.is_empty()
@@ -1723,7 +1433,6 @@ impl ComposerInput {
                 self.undo_stack.remove(0);
             }
         }
-        // Any fresh edit invalidates the redo branch.
         self.redo_stack.clear();
         let tail = match kind {
             EditKind::Insert => range.start + new_text.len(),
@@ -1740,7 +1449,6 @@ impl ComposerInput {
         self.selection_reversed = snapshot.selection_reversed;
         self.marked_range = None;
         self.follow_cursor = true;
-        // Never merge a subsequent edit into a step that undo just crossed.
         self.last_edit = None;
         self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
@@ -1762,8 +1470,6 @@ impl ComposerInput {
         self.undo_stack.push(self.snapshot());
         self.restore(next, cx);
     }
-
-    // ---- editing ops ----
 
     pub fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
@@ -1844,7 +1550,6 @@ impl ComposerInput {
             .unwrap_or(self.content.len())
     }
 
-    /// Byte range of the logical line containing `offset`.
     fn line_range_at(&self, offset: usize) -> Range<usize> {
         let start = self.content[..offset]
             .rfind('\n')
@@ -1929,9 +1634,6 @@ impl ComposerInput {
         }
     }
 
-    /// Offset one wrapped line above/below the cursor, keeping its x column.
-    /// Clamps to the document edges, matching the platform's behavior on the
-    /// first and last line.
     fn vertical_target(&self, dir: f32) -> Option<usize> {
         let current = self.point_for_index(self.cursor_offset())?;
         let target_y = f32::from(current.y) + dir * f32::from(self.line_height);
@@ -2013,8 +1715,6 @@ impl ComposerInput {
         self.select_to(next, cx);
     }
 
-    /// Opt/Cmd + Delete family. With a live selection these delete the
-    /// selection only (platform behavior) — the extend runs off the cursor.
     fn delete_to(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             if self.cursor_offset() == offset {
@@ -2071,8 +1771,6 @@ impl ComposerInput {
                 self.content[self.selected_range.clone()].to_string(),
             ));
         } else if let Some(text) = crate::markdown::selection::selected_text() {
-            // The composer keeps focus while the user reads the transcript —
-            // Cmd+C with no input selection copies the markdown selection.
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -2090,9 +1788,6 @@ impl ComposerInput {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
-        // Image data (or copied files) beats text — the original composer's
-        // onPaste prevents the default text insert when `clipboardData.files`
-        // is non-empty and stages the images instead.
         let mut images: Vec<gpui::Image> = Vec::new();
         let mut paths: Vec<PathBuf> = Vec::new();
         for entry in &item.entries {
@@ -2113,7 +1808,6 @@ impl ComposerInput {
             return;
         }
         if let Some(text) = item.text() {
-            // Multiline input: newlines are welcome (unlike the single-line example).
             self.replace_text_in_range(None, &text, window, cx);
         }
     }
@@ -2146,9 +1840,6 @@ impl ComposerInput {
         }
     }
 
-    // ---- geometry ----
-
-    /// Content-local point for a byte index (y grows down from content top).
     fn point_for_index(&self, index: usize) -> Option<Point<Pixels>> {
         self.point_for_display_index(self.projection.raw_to_display(index))
     }
@@ -2160,9 +1851,6 @@ impl ComposerInput {
         (y >= px(0.0) && y + self.line_height <= height).then_some(gpui::point(point.x, y))
     }
 
-    /// Content-local point for a shaped projection byte index. The icon layer
-    /// uses this to occupy its explicit projection slot without inventing a
-    /// second coordinate system beside the custom text editor.
     fn point_for_display_index(&self, index: usize) -> Option<Point<Pixels>> {
         for (line_ix, line) in self.last_lines.iter().enumerate() {
             let line_start = *self.line_starts.get(line_ix)?;
@@ -2184,11 +1872,6 @@ impl ComposerInput {
         None
     }
 
-    /// Content-local boxes occupied by a projected byte range, split at every
-    /// soft wrap. A caret exactly at a wrap boundary belongs visually to both
-    /// rows in GPUI; using the explicit wrap indices lets the range's first
-    /// glyph start at x=0 on the new row instead of inheriting the old row's
-    /// end caret (which previously caused mention washes to be discarded).
     fn bounds_for_display_range(&self, range: Range<usize>) -> Vec<Bounds<Pixels>> {
         let mut bounds = Vec::new();
         let mut y_offset = px(0.0);
@@ -2234,7 +1917,6 @@ impl ComposerInput {
         bounds
     }
 
-    /// Byte index closest to a content-local point.
     fn index_for_point(&self, position: Point<Pixels>) -> usize {
         if self.display_is_placeholder {
             return 0;
@@ -2375,8 +2057,6 @@ impl ComposerInput {
         self.scroll_top = next;
         let edge_position = self.drag_selection_position(position);
         self.select_to(self.index_for_mouse_position(edge_position), cx);
-        // Selection motion normally resumes caret following. During an edge
-        // drag the autoscroll loop owns the viewport instead.
         self.follow_cursor = false;
         true
     }
@@ -2407,8 +2087,6 @@ impl ComposerInput {
         cx.emit(ComposerInputEvent::ViewportChanged);
         cx.notify();
     }
-
-    // ---- utf16 mapping (IME) ----
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
         let mut utf8_offset = 0;
@@ -2444,8 +2122,6 @@ impl ComposerInput {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
-    /// Shape the text at a width; store measured layout; return content height.
-    /// Called from the element's measured-layout closure.
     fn layout_text(
         &mut self,
         width: Pixels,
@@ -2453,10 +2129,6 @@ impl ComposerInput {
         window: &mut Window,
         cx: &App,
     ) -> f32 {
-        // Rebuild this even for an empty draft. Otherwise deleting the final
-        // mention can leave its previous paint geometry alive while the
-        // placeholder is already being shaped, tinting "Do anything" for a
-        // frame (or longer when no subsequent layout is requested).
         self.refresh_projection();
         let (display, is_placeholder) = if self.content.is_empty() {
             (self.placeholder.clone(), true)
@@ -2466,8 +2138,6 @@ impl ComposerInput {
         let font_size = style.font_size.to_pixels(window.rem_size());
         self.line_height = px(INPUT_LINE_HEIGHT);
 
-        // Chips read as inline code: the markdown renderer's recipe (mono font
-        // + `code_text` violet) over the rounded `code_wash` painted beneath.
         let (chip_font, chip_color) = {
             let theme = Theme::of(cx);
             (gpui::font(theme.font_mono.clone()), theme.code_text)
@@ -2480,8 +2150,6 @@ impl ComposerInput {
                 style.font()
             },
             color: if chip { chip_color } else { style.color },
-            // Rounded mention washes are painted explicitly beneath the text;
-            // TextRun backgrounds are square and can disappear in wrapped runs.
             background_color: None,
             underline: underline.then_some(UnderlineStyle {
                 color: Some(style.color),
@@ -2527,12 +2195,11 @@ impl ComposerInput {
             .map(|small| small.into_vec())
             .unwrap_or_default();
 
-        // Logical line byte offsets (each shaped line covers one \n-split line).
         let mut line_starts = Vec::with_capacity(lines.len());
         let mut at = 0usize;
         for line in &lines {
             line_starts.push(at);
-            at += line.len() + 1; // + '\n'
+            at += line.len() + 1;
         }
         if line_starts.is_empty() {
             line_starts.push(0);
@@ -2557,7 +2224,6 @@ impl ComposerInput {
         self.content_height
     }
 
-    /// Keep the cursor visible when content exceeds the element height.
     fn clamp_scroll(&mut self, element_height: f32) -> bool {
         let previous = self.scroll_top;
         if self.follow_cursor {
@@ -2638,9 +2304,6 @@ impl EntityInputHandler for ComposerInput {
             .unwrap_or(self.selected_range.clone());
         let range = self.projection.normalize_range(range);
         self.invalidate_mention_tooltip();
-        // An IME commit is the tail of a composition whose pre-composition
-        // snapshot was already taken (`replace_and_mark_text_in_range`);
-        // recording here would pin undo to the half-composed text instead.
         if self.marked_range.is_none() {
             self.record_edit(&range, new_text);
         }
@@ -2671,8 +2334,6 @@ impl EntityInputHandler for ComposerInput {
             .unwrap_or(self.selected_range.clone());
         let range = self.projection.normalize_range(range);
         self.invalidate_mention_tooltip();
-        // First keystroke of a composition: snapshot the text as it stood
-        // before any of it existed, so one undo drops the whole composition.
         if self.marked_range.is_none() {
             self.undo_stack.push(self.snapshot());
             if self.undo_stack.len() > UNDO_LIMIT {
@@ -2729,17 +2390,13 @@ impl EntityInputHandler for ComposerInput {
     }
 }
 
-/// The custom element: measured auto-grow layout + shaped-line painting.
 struct ComposerTextElement {
     input: Entity<ComposerInput>,
-    /// Max content height before internal scrolling kicks in.
     max_content_height: f32,
 }
 
 struct MentionPathTooltip {
     path: SharedString,
-    /// Stable for one `Waiting → Visible` promotion; a later activation gets
-    /// a new key and therefore exactly one fresh fade-in.
     activation: u64,
 }
 
@@ -2771,9 +2428,6 @@ struct ComposerTextPrepaint {
     mention_quads: Vec<PaintQuad>,
     mention_hits: Vec<MentionHit>,
     selection_quads: Vec<PaintQuad>,
-    /// Completion preview: window-space origin of the end-of-text caret plus
-    /// the suffix to paint there (shaped at paint time — it never joins the
-    /// content's own layout, so hit-testing and the caret ignore it).
     ghost: Option<(Point<Pixels>, SharedString)>,
 }
 
@@ -2843,7 +2497,6 @@ impl gpui::Element for ComposerTextElement {
         let origin = point(bounds.left(), bounds.top() - scroll);
         let selection_color = Theme::of(cx).selection;
         let caret_color = Theme::of(cx).caret;
-        // The inline-code recipe: chips wash violet like `code` spans do.
         let mention_color = Theme::of(cx).code_wash;
 
         let mut mention_quads = Vec::new();
@@ -2877,8 +2530,6 @@ impl gpui::Element for ComposerTextElement {
                 let anchor_y = if above_anchor >= px(0.0) {
                     above_anchor
                 } else {
-                    // GPUI positions at anchor + 1px; subtracting one keeps the
-                    // below fallback flush so the pointer can enter the popup.
                     chip_bounds.bottom() - px(1.0)
                 };
                 let visible_bounds = chip_bounds.intersect(&bounds);
@@ -2888,9 +2539,6 @@ impl gpui::Element for ComposerTextElement {
                 mention_hits.push(MentionHit {
                     target: target.clone(),
                     bounds: visible_bounds,
-                    // The fixed-height popup starts at anchor + 1px. Moving
-                    // the anchor above the chip therefore yields conventional
-                    // above-target placement without cursor tracking.
                     anchor: point(chip_bounds.left(), anchor_y),
                 });
             }
@@ -2926,7 +2574,6 @@ impl gpui::Element for ComposerTextElement {
                     selection_color,
                 ));
             } else {
-                // First visual row, full middle rows, last visual row.
                 selection_quads.push(fill(
                     Bounds::from_corners(
                         point(origin.x + start.x, origin.y + start.y),
@@ -2966,8 +2613,6 @@ impl gpui::Element for ComposerTextElement {
                 }),
             });
         }
-        // The ghost only shows where accepting it would insert: a collapsed
-        // caret at the end of real (non-placeholder, non-IME) text.
         let ghost = input
             .ghost
             .clone()
@@ -3018,8 +2663,6 @@ impl gpui::Element for ComposerTextElement {
             }
         });
 
-        // WrappedLine isn't Clone — temporarily take the shaped lines out of the
-        // entity for painting, then put them back for mouse mapping.
         let (lines, line_height, scroll) = self.input.update(cx, |input, _| {
             (
                 std::mem::take(&mut input.last_lines),
@@ -3062,7 +2705,6 @@ impl gpui::Element for ComposerTextElement {
                 let line = window
                     .text_system()
                     .shape_line(ghost, font_size, &[run], None);
-                // (Clipping comes from the surrounding content mask.)
                 let _ = line.paint(
                     ghost_origin,
                     line_height,
@@ -3072,9 +2714,6 @@ impl gpui::Element for ComposerTextElement {
                     cx,
                 );
             }
-            // Caret only when this input is actually focused in an active
-            // window (Electron hides it on window deactivation too), and only
-            // in the "on" blink phase — solid while typing, ~500ms blink idle.
             if self
                 .input
                 .update(cx, |input, cx| input.caret_shown(window, cx))
@@ -3148,23 +2787,13 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child(ComposerTextElement {
                 input: cx.entity(),
-                // Internal scrolling once content exceeds the 260px textarea
-                // box minus its `pt-4 pb-1` padding.
                 max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
             })
     }
 }
 
-// ---------------------------------------------------------------------------
-// Composer wrapper
-// ---------------------------------------------------------------------------
-
-/// Events the shell listens for.
 #[derive(Debug, Clone)]
 pub enum ComposerEvent {
-    /// A prompt was sent optimistically — give the transcript its exact row
-    /// identity so it can anchor the prompt at the top with the reply's
-    /// reserved space below it.
     Sent { chat_id: String, message_id: String },
 }
 
@@ -3174,8 +2803,6 @@ struct MentionToken {
     query: String,
 }
 
-/// The `@` must begin a token. This intentionally excludes `name@example.com`
-/// and ordinary words while allowing punctuation such as `(@src`.
 fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -3207,9 +2834,6 @@ fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     })
 }
 
-/// The `/` must open the input: slash commands are whole-prompt prefixes
-/// (`/compact`, `/goal ship it`), so only the first token triggers, and a
-/// query containing another `/` (a typed path) never does.
 fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     if cursor > text.len() || !text.is_char_boundary(cursor) || !text.starts_with('/') {
         return None;
@@ -3218,7 +2842,6 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
         .char_indices()
         .find_map(|(at, ch)| ch.is_whitespace().then_some(at))
         .unwrap_or(text.len());
-    // Cursor outside the command token (typing the argument): popup closed.
     if cursor == 0 || cursor > end {
         return None;
     }
@@ -3232,19 +2855,13 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     })
 }
 
-/// Slash-command completion state: like [`FileMentionState`] but the
-/// candidate list is fetched once per harness/target (`ListCommands`) and
-/// filtered locally per keystroke — no RPC, debounce, or skeleton churn while
-/// typing.
 type SlashCacheKey = (HarnessId, Option<String>);
 
 #[derive(Debug, Clone, Default)]
 struct SlashState {
     token: Option<MentionToken>,
-    /// Indices into the cached command list, filter-ranked for the query.
     filtered: Vec<usize>,
     active: Option<usize>,
-    /// Harness the popup is showing commands for (cache key).
     harness: Option<HarnessId>,
     loading: bool,
     error: Option<SharedString>,
@@ -3258,13 +2875,7 @@ struct FileMentionState {
     active: Option<usize>,
     request: u64,
     loading: bool,
-    /// Why the last search failed, for the popup. A failure MUST NOT render
-    /// as "No matching files": cross-device searches fail for reasons the
-    /// user can act on (host daemon too old for `SearchFiles`, device
-    /// offline), and the empty state hid them (user report).
     error: Option<SharedString>,
-    /// Full token text, not just the cursor-relative query: moving within a
-    /// dismissed token keeps it closed, while any edit re-enables completion.
     dismissed: Option<(Range<usize>, String)>,
 }
 
@@ -3272,10 +2883,6 @@ fn mention_response_is_current(state: &FileMentionState, request: u64) -> bool {
     state.request == request && state.token.is_some()
 }
 
-/// A failed file search, translated for the popup. `UnknownMethod` is the
-/// version-skew case: `SearchFiles` shipped after v0.1.9, so a session hosted
-/// by a device on an older daemon answers "unknown method" while the same
-/// search works for local sessions.
 fn mention_error_message(err: &RpcError) -> SharedString {
     match err {
         RpcError::UnknownMethod(_) => {
@@ -3286,7 +2893,6 @@ fn mention_error_message(err: &RpcError) -> SharedString {
     }
 }
 
-/// A failed command discovery, translated for the popup.
 fn slash_error_message(err: &RpcError) -> SharedString {
     match err {
         RpcError::UnknownMethod(_) => {
@@ -3302,74 +2908,37 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 pub struct Composer {
     state: Entity<AppState>,
     input: Entity<ComposerInput>,
-    /// Composer actions row: repo/branch/harness-model/traits (§1.7).
-    /// Shared with the shell's new-session canvas, which renders the
-    /// device/project target selectors ([`Pickers::render_target_selectors`]).
     pickers: Entity<Pickers>,
-    /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
     drafts: HashMap<String, String>,
-    /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
-    /// navigating away and back restores them; memory-only, like the original.
     attachments: HashMap<String, Vec<StagedAttachment>>,
-    /// The staged attachment being viewed full-size (click a thumbnail).
     preview: Option<attachments::PreviewImage>,
-    /// Focused while the lightbox is open so Escape reaches it; the input
-    /// gets focus back on close.
     preview_focus: FocusHandle,
-    /// Focus grab deferred to the next render (open sites don't all have a
-    /// `Window` — the `ZERON_ATTACH_PREVIEW` boot knob opens in `new`).
     preview_focus_pending: bool,
-    /// In-flight file-picker prompt (paperclip).
     picker_task: Option<Task<()>>,
     mention_task: Option<Task<()>>,
     mention: FileMentionState,
     slash_task: Option<Task<()>>,
-    /// Harness/target currently being warmed up for slash completion. Keeping
-    /// this separate from `slash.token` lets discovery start before the user
-    /// types `/`, and prevents a second request while the first is in flight.
     slash_fetching: Option<SlashCacheKey>,
     slash: SlashState,
-    /// Advertised commands per harness/target (one `ListCommands` per key per
-    /// composer lifetime; the engine caches discovery on its side too).
     slash_cache: HashMap<SlashCacheKey, Vec<SlashCommand>>,
     current_key: String,
     sending: bool,
     failure: Option<SharedString>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
-    /// Requests already answered locally (suppresses the panel until the doc
-    /// frame marks them resolved).
     answered_requests: HashSet<String>,
     advance_task: Option<Task<()>>,
     send_task: Option<Task<()>>,
-    // -- compact/expanded flip state (hysteresis; see `composer_flip`) --
-    /// Current layout mode (persisted across frames — never derived fresh).
     expanded_mode: bool,
-    /// `layout_epoch` of the measurement that caused the last flip: the flip is
-    /// re-evaluated only after the input has been laid out in the new mode, so
-    /// at most one flip can happen per layout pass.
     flip_epoch: u64,
-    /// Compact-mode input capacity, learned while compact (layout-stable).
     compact_capacity: f32,
-    /// Input width first measured after expanding — container-width deltas
-    /// while expanded shift `compact_capacity` by the same amount.
     expanded_anchor: f32,
-    /// Last input width seen in the current mode (resize detection).
     last_seen_width: f32,
-    /// Set while an interactive resize is in flight; mode is frozen until
-    /// widths have settled for [`RESIZE_SETTLE_MS`].
     width_changed_at: Option<Instant>,
     settle_task: Option<Task<()>>,
-    /// In-flight compact↔expanded morph (one per committed flip; manual
-    /// drive — see [`FlipMorph`]).
     flip_morph: Option<FlipMorph>,
-    /// Pill height actually rendered last frame — a committed flip morphs
-    /// from here, so mid-flight reversals hand off without a jump.
     last_rendered_height: f32,
-    /// Monotonic clock anchor for the morph timeline.
     morph_clock: Instant,
-    /// Set on every session/route change: flips committed before this instant
-    /// SNAP instead of morphing (see [`ROUTE_SNAP_MS`]).
     route_snap_until: Option<Instant>,
     _observe: Subscription,
     _pickers_observe: Subscription,
@@ -3379,7 +2948,6 @@ pub struct Composer {
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
-    /// The picker entity, for the shell's canvas target selectors.
     pub fn pickers(&self) -> &Entity<Pickers> {
         &self.pickers
     }
@@ -3391,13 +2959,7 @@ impl Composer {
             input
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
-        // The footer toolbar (checkout kind + ref picker) is rendered INLINE
-        // by the composer from picker state — a pickers-side notify (refs
-        // loaded, popover toggled, pick made) must repaint the composer too.
         let pickers_observe = cx.observe(&pickers, |this: &mut Self, _, cx| {
-            // Harness catalogs load asynchronously. Start command discovery
-            // as soon as the effective harness is known, rather than making
-            // the first `/` keystroke pay for the agent probe.
             this.ensure_slash_commands(cx);
             cx.notify();
         });
@@ -3408,9 +2970,6 @@ impl Composer {
                 this.on_input_edited(cx)
             }
             ComposerInputEvent::ViewportChanged => cx.notify(),
-            // The slash popup and the mention popup share the input's
-            // completion key routing; they are mutually exclusive by token
-            // shape (`/` at offset 0 vs `@` at a token boundary).
             ComposerInputEvent::MentionNavigate(delta) => {
                 if this.slash.token.is_some() {
                     this.move_slash(*delta, cx)
@@ -3481,12 +3040,7 @@ impl Composer {
             _pickers_observe: pickers_observe,
             _input_events: input_events,
         };
-        // The picker may already have a remembered harness on the first
-        // frame; warm its command list immediately when that is possible.
         composer.ensure_slash_commands(cx);
-        // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
-        // a rig) — `ZERON_ATTACH=/path/a.png[,/path/b.png]`, and
-        // `ZERON_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
         if let Ok(spec) = std::env::var("ZERON_ATTACH") {
             let staged: Vec<StagedAttachment> = spec
                 .split(',')
@@ -3521,8 +3075,6 @@ impl Composer {
         composer
     }
 
-    /// Capture-knob passthrough (`ZERON_OPEN_DIALOG=model`): open the
-    /// combined harness/model menu.
     pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pickers
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
@@ -3532,9 +3084,6 @@ impl Composer {
         self.sending
     }
 
-    // ---- attachment staging (use-attachments.ts) ----
-
-    /// Staged attachments for the chat the composer is showing.
     fn staged(&self) -> &[StagedAttachment] {
         self.attachments
             .get(&self.current_key)
@@ -3553,9 +3102,6 @@ impl Composer {
         cx.notify();
     }
 
-    /// Stage image files (picker / drop / pasted paths). Non-images are
-    /// skipped silently (matching the original's `image/*` filter); read
-    /// failures and oversize files surface in the failure notice.
     pub(crate) fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let mut staged = Vec::new();
         for path in &paths {
@@ -3583,8 +3129,6 @@ impl Composer {
         cx.notify();
     }
 
-    /// Drop a deleted chat's per-chat composer state — staged attachments hold
-    /// raw image bytes, and a deleted chat's stage could never be sent again.
     pub fn purge_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         self.attachments.remove(chat_id);
         self.state.update(cx, |state, _| {
@@ -3592,7 +3136,6 @@ impl Composer {
         });
     }
 
-    /// Staged in `AppState` because the changes pane writes them.
     fn staged_comments(&self, cx: &App) -> Vec<crate::comments::DiffComment> {
         self.state
             .read(cx)
@@ -3616,8 +3159,6 @@ impl Composer {
                     &crate::badges::MessageBadge {
                         icon: crate::icons::CHAT_ROUND_LINE,
                         label: crate::comments::chip_label(count).into(),
-                        // The staged set is already on screen in the changes
-                        // pane, so a hover card would only repeat it.
                         details: Vec::new(),
                     },
                     theme,
@@ -3625,9 +3166,6 @@ impl Composer {
         )
     }
 
-    /// The staged-thumbnail strip (attachment-ui.tsx AttachmentStrip):
-    /// `flex flex-wrap gap-2 px-4 pt-3`, 56px rounded thumbs, a remove button
-    /// revealed on hover, click opens the full-size preview.
     fn render_attachment_strip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let staged = self.staged();
         if staged.is_empty() {
@@ -3668,15 +3206,10 @@ impl Composer {
                             .child(
                                 img(att.image.clone())
                                     .size_full()
-                                    // Own radii — the frame's rounding only
-                                    // clips rectangularly (7 = 8 - border).
                                     .rounded(px(7.0))
                                     .object_fit(ObjectFit::Cover),
                             ),
                     )
-                    // Own layer: inside the frosted pill everything shares one
-                    // draw order and images render last, so without it the
-                    // thumbnail paints OVER this button (user report).
                     .child(crate::frost::layered(
                         div()
                             .id(("composer-att-remove", ix))
@@ -3694,9 +3227,6 @@ impl Composer {
                             .opacity(0.0)
                             .group_hover(group, |s| s.opacity(1.0))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                // The button overhangs the thumbnail, whose
-                                // hitbox is right underneath — don't let the
-                                // same click also open the preview.
                                 cx.stop_propagation();
                                 this.remove_attachment(&remove_id, cx);
                             }))
@@ -3711,8 +3241,6 @@ impl Composer {
         Some(strip)
     }
 
-    /// Paperclip: the native image picker (the original's hidden
-    /// `<input type=file accept=image/* multiple>`).
     fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -3740,9 +3268,6 @@ impl Composer {
         });
     }
 
-    /// Tear down the entire completion lifecycle. Advancing the generation is
-    /// important even when the spawned task is dropped: an RPC response may
-    /// already be queued for delivery on the UI executor.
     fn reset_mention(&mut self, dismissed: Option<(Range<usize>, String)>, cx: &mut Context<Self>) {
         let request = self.mention.request.wrapping_add(1);
         self.mention_task = None;
@@ -3793,9 +3318,6 @@ impl Composer {
         }
         self.mention.request = self.mention.request.wrapping_add(1);
         self.mention_task = None;
-        // Refining an open menu keeps the stale rows visible until the new
-        // response lands — clearing here made the popup bounce through the
-        // skeleton (and a different height) on every keystroke.
         let refining = self.mention.token.is_some() && token.is_some();
         self.mention.token = token.clone();
         if !refining {
@@ -3846,9 +3368,6 @@ impl Composer {
         }
         let request = self.mention.request;
         self.mention_task = Some(cx.spawn(async move |this, cx| {
-            // A short debounce prevents one full workspace walk per keystroke
-            // during normal typing. The generation check below still guards
-            // requests that were already in flight when the query changed.
             cx.background_executor()
                 .timer(Duration::from_millis(80))
                 .await;
@@ -3857,9 +3376,6 @@ impl Composer {
                 .call(methods::SEARCH_FILES, params.clone())
                 .await;
             if matches!(result, Err(RpcError::Transport(_)) | Err(RpcError::Closed)) {
-                // One retry rides out a cold relay dial to the host device
-                // (the diffs pane retries forever; a keystroke-scoped search
-                // gets a single second chance).
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
@@ -4026,9 +3542,6 @@ impl Composer {
             .input
             .read(cx)
             .visible_point_for_index(token.range.start)?;
-        // No exit phase: the completion popup tracks the token under the
-        // caret — a fade-out on every keystroke-driven dismissal would read
-        // as input lag, not polish.
         Some(crate::popover::anchored_menu_above_at(
             "file-mention-popup",
             anchor,
@@ -4045,10 +3558,6 @@ impl Composer {
             .children(self.render_slash_popup(theme, cx))
     }
 
-    // ---- slash commands ---------------------------------------------------
-
-    /// Device hosting the selected session, when there is one. New-chat
-    /// discovery falls back to the local engine when no remote target exists.
     fn slash_target(&self, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
         state
@@ -4061,9 +3570,6 @@ impl Composer {
             })
     }
 
-    /// Warm one harness's command list. ACP discovery can launch an agent and
-    /// wait for `available_commands_update`, so this runs as soon as the
-    /// picker resolves a harness instead of on the first slash keystroke.
     fn ensure_slash_commands(&mut self, cx: &mut Context<Self>) {
         let Some(harness) = self.pickers.read(cx).resolved(cx).harness else {
             return;
@@ -4090,9 +3596,6 @@ impl Composer {
             }
             let result = engine.client().call(methods::LIST_COMMANDS, params).await;
             this.update(cx, |composer, cx| {
-                // A later request for the same harness/target should own the result.
-                // Normally this cannot happen because `slash_fetching` gates
-                // launches, but the check keeps task replacement harmless.
                 if composer.slash_fetching.as_ref() != Some(&cache_key) {
                     return;
                 }
@@ -4131,8 +3634,6 @@ impl Composer {
         }));
     }
 
-    /// Track the `/` token on every edit: open/refresh the popup, fetch the
-    /// harness's command list on first open, filter locally per keystroke.
     fn update_slash(&mut self, text: &str, cursor: usize, cx: &mut Context<Self>) {
         let token = slash_token(text, cursor);
         let still_dismissed = token.as_ref().is_some_and(|token| {
@@ -4160,7 +3661,6 @@ impl Composer {
             self.sync_mention_controls(cx);
             return;
         }
-        // No resolved harness (catalog still loading): empty popup, no fetch.
         let Some(harness) = harness else {
             self.slash.loading = false;
             self.refilter_slash(cx);
@@ -4172,16 +3672,12 @@ impl Composer {
             self.refilter_slash(cx);
             return;
         }
-        // Discovery is normally already warming in the background. If the
-        // user beats it here, keep the skeleton visible while reusing that
-        // same request instead of launching a duplicate probe.
         self.slash.loading = true;
         self.refilter_slash(cx);
         self.ensure_slash_commands(cx);
         cx.notify();
     }
 
-    /// Re-rank the cached list for the current query (pure local filter).
     fn refilter_slash(&mut self, cx: &mut Context<Self>) {
         let query = self
             .slash
@@ -4246,7 +3742,6 @@ impl Composer {
         cx.notify();
     }
 
-    /// Tear down the slash completion (mirrors [`Self::reset_mention`]).
     fn reset_slash(&mut self, dismissed: Option<(Range<usize>, String)>, cx: &mut Context<Self>) {
         self.slash = SlashState {
             dismissed,
@@ -4380,12 +3875,8 @@ impl Composer {
                 pending_input_request(&s.transcript),
             )
         };
-        // The engine can become available after the composer and picker were
-        // created. Retry the background warm-up when account/session state
-        // publishes that transition.
         self.ensure_slash_commands(cx);
 
-        // Draft swap on chat navigation — the input entity itself survives.
         if key != self.current_key {
             let old_text = self.input.read(cx).text().to_string();
             if old_text.is_empty() {
@@ -4397,23 +3888,14 @@ impl Composer {
             self.current_key = key;
             self.failure = None;
             self.wizard = None;
-            // Attachments stay stashed under their chat key (the map swap IS
-            // the navigation); only the transient chrome resets.
             self.preview = None;
             self.reset_mention(None, cx);
-            // Route changes snap (round 5/6): a mode difference between the
-            // old and new session's composer must not glide across
-            // navigation. Killing the in-flight morph here isn't enough —
-            // the nav-driven flip only commits AFTER the swapped draft has
-            // been re-measured, one or two renders later, so the whole
-            // window snaps (see ROUTE_SNAP_MS).
             self.flip_morph = None;
             self.last_rendered_height = 0.0;
             self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
         }
 
-        // Question panel lifecycle (wizard state cached per request id).
         match pending {
             Some((request_id, questions)) if !self.answered_requests.contains(&request_id) => {
                 let same = self
@@ -4424,7 +3906,6 @@ impl Composer {
                     self.reset_mention(None, cx);
                     self.wizard = Some(Wizard::new(request_id, questions));
                     self.advance_task = None;
-                    // The shared input becomes the panel's free-text override.
                     self.input.update(cx, |input, cx| {
                         input.set_placeholder("Type your own answer, or pick an option above", cx)
                     });
@@ -4432,15 +3913,6 @@ impl Composer {
             }
             _ => {
                 if let Some(wizard) = self.wizard.as_ref() {
-                    // LATCH (original composer.tsx `inputLatch`): a transient
-                    // fold/sync blip — or a steer appended behind the
-                    // streaming entry — must not unmount the panel and lose
-                    // the user's picks. Release only on explicit resolution
-                    // (here or on another device) or when a NON-EMPTY
-                    // transcript shows the question superseded (a newer
-                    // assistant entry took over). Never on run death: the
-                    // question stays answerable until answered — the engine
-                    // delivers a dead run's answer as a resumed turn.
                     let transcript = self.state.read(cx).transcript.clone();
                     let released = input_request_resolved(&transcript, &wizard.request_id)
                         || (!transcript.is_empty()
@@ -4468,10 +3940,6 @@ impl Composer {
         )
     }
 
-    /// New-chat sends need a project: with none picked (empty device, or a
-    /// selection healed away) the send button dims and submit is a no-op —
-    /// project-less `~`-cwd sessions are no longer mintable from the canvas.
-    /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         state.selected_chat.is_none() && state.selected_space_row().is_none()
@@ -4488,7 +3956,6 @@ impl Composer {
 
     fn on_submit(&mut self, cx: &mut Context<Self>) {
         if self.wizard.is_some() {
-            // Enter inside the panel's free-text input submits the page.
             let typed = self.input.read(cx).text().trim().to_string();
             if let Some(w) = self.wizard.as_mut() {
                 w.set_typed(typed);
@@ -4508,38 +3975,23 @@ impl Composer {
         }
     }
 
-    /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
-    /// thread the picked config in: worktree creation (when the isolated toggle
-    /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
-    /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             cx.notify();
             return;
         };
-        // Chat id: existing selection, or client-minted for the new-chat canvas
-        // (the chat then appears from the doc host once the doc materializes).
         let (chat_id, is_new) = match self.state.read(cx).selected_chat.clone() {
             Some(id) => (id, false),
             None => (uuid::Uuid::new_v4().to_string(), true),
         };
-        // Where the new session runs (Current checkout / reuse an existing
-        // worktree / fresh worktree off the picked base) — resolved NOW so
-        // the async block needs no picker access.
         let plan = self.pickers.read(cx).checkout_plan();
-        // Fully-resolved model/reasoning/options — concrete values (chat config
-        // or defaults), so the engine never has to guess a "default".
         let resolved = self.pickers.read(cx).resolved(cx);
         let existing_cwd = self
             .state
             .read(cx)
             .selected_chat_row()
             .and_then(|c| c.cwd.clone());
-        // The PROJECT fixes the new chat's device + base folder — sessions are
-        // minted onto the project's device, not necessarily this one. With no
-        // project ("Don't work in a project") the composer's device pick is
-        // the host and the session runs from `~` there.
         let space = self.state.read(cx).selected_space_row().cloned();
         let local_device_id = self.state.read(cx).local_device_id.clone();
         let target_device_id = self.state.read(cx).effective_device_id();
@@ -4555,8 +4007,6 @@ impl Composer {
                 .or_else(|| local_device_id.clone())
                 .unwrap_or_else(|| "local".to_string())
         };
-        // Uploads/read-backs target the chat's HOST device (forwardable RPCs);
-        // for a new chat that's the target device (None when it's local).
         let host_device_id = if is_new {
             target_device_id
                 .clone()
@@ -4572,16 +4022,10 @@ impl Composer {
         let space_remote = space
             .as_ref()
             .is_some_and(|s| local_device_id.as_deref() != Some(s.device_id.as_str()));
-        // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
-        // strip empties the instant you hit send; a failure hands the files
-        // back into the chat's stash.
         let staged = self
             .attachments
             .remove(&self.current_key)
             .unwrap_or_default();
-        // `typed` keeps the user's own words for the failure hand-back below:
-        // restoring the folded prompt would paste the comment block into the
-        // input as literal text.
         let key = self.current_key.clone();
         let comments = self.state.update(cx, |state, cx| {
             let taken = state.take_diff_comments(&key);
@@ -4596,13 +4040,6 @@ impl Composer {
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
 
-        // The echo carries synthetic attachment refs from the first frame, so
-        // photos render while the send is still pending instead of waiting for
-        // the upload to finish (real paths replace them in the post-upload
-        // refresh). The refs resolve instantly: the staged bytes are seeded
-        // into the transcript cache under every device key the transcript
-        // consults, and the synthetic paths never persist — the queued command
-        // and the doc entry are built from `with_attachments` on real paths.
         let echo_paths: Vec<String> = staged
             .iter()
             .map(|att| format!("pending/{}/{}", att.id, att.name))
@@ -4617,8 +4054,6 @@ impl Composer {
             }
         }
 
-        // Optimistic echo (client-minted id doubles as the persisted message id,
-        // so the doc frame dedups it away).
         let echo = SessionMessageEntry {
             id: message_id.clone(),
             role: zeron_doc::MessageRole::User,
@@ -4636,9 +4071,6 @@ impl Composer {
                 s.select_chat(Some(chat_id.clone()), cx);
             }
             s.push_echo(&chat_id, echo);
-            // Working overlay until the host executes the queued command —
-            // without it a remote send flashed Completed (and could ring the
-            // done-chime) in the queue→drain→sync gap.
             s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
             cx.notify();
         });
@@ -4659,25 +4091,13 @@ impl Composer {
         let err_message_id = message_id.clone();
         self.send_task = Some(cx.spawn(async move |this, cx| {
             let result: Result<(), String> = async {
-                // Resolve the working directory: existing chats keep theirs;
-                // new chats run per the checkout plan (t3code env-mode): the
-                // space's folder as-is, an EXISTING worktree of the picked ref
-                // (a plain cwd override — multiple sessions share one
-                // worktree), or a fresh isolated worktree created off the
-                // picked base ref (CreateWorktree on send, targeted at the
-                // space's device; the RPC relay-forwards).
                 let mut cwd = if is_new {
-                    // Project-less sessions run from the host's home dir —
-                    // "~" is expanded on the host when the run spawns.
                     space_path.clone().or_else(|| Some("~".to_string()))
                 } else {
                     existing_cwd
                 }
                 .unwrap_or_else(|| ".".to_string());
                 let mut worktree_cwd: Option<String> = None;
-                // The picked ref rides createChat so the session footer names
-                // it from the first frame (it read "Select ref" until the
-                // host's diff reconciler got around to stamping the branch).
                 let mut chat_branch: Option<String> = None;
                 if is_new {
                     match &plan {
@@ -4692,14 +4112,6 @@ impl Composer {
                         crate::pickers::CheckoutPlan::NewWorktree { base } => {
                             chat_branch = base.clone();
                             if let Some(repo_path) = &space_path {
-                                // A remote repo's branch list loads over the
-                                // relay — on a bad link it may never arrive
-                                // and the picker has no base. That must NOT
-                                // silently drop the isolation the user picked
-                                // (2026-08-19: "New worktree" ran in the main
-                                // checkout): default to HEAD, which git — any
-                                // host version — resolves as the repo's
-                                // current checkout state.
                                 let base =
                                     base.clone().unwrap_or_else(|| "HEAD".to_string());
                                 let mut params = serde_json::json!({
@@ -4728,11 +4140,6 @@ impl Composer {
                     }
                 }
 
-                // Best-effort Mutate createChat with the picked config: the
-                // engine resolves device + cwd from the PROJECT row when one
-                // is picked; project-less chats name the host device outright
-                // (idempotent; the doc host would materialize the chat on
-                // first command anyway, so failures are non-fatal).
                 if is_new {
                     let mut mutate = serde_json::json!({
                         "op": "createChat",
@@ -4778,10 +4185,6 @@ impl Composer {
                     }
                 }
 
-                // Stage every attachment on the host device (sequential — the
-                // chunks share one channel), then thread the refs into the
-                // prompt text (`with_attachments`, the persisted transport)
-                // and the paths onto the Run request (inline image blocks).
                 let mut content = text.clone();
                 let mut attachment_paths: Vec<String> = Vec::new();
                 if !staged.is_empty() {
@@ -4804,9 +4207,6 @@ impl Composer {
                             }
                         }
                     }
-                    // Seed the transcript cache from local bytes so the sent
-                    // bubble's thumbnails never round-trip (seedTranscript-
-                    // Attachment in the original send path).
                     let seed_device = host_device_id.clone().unwrap_or_else(|| device_id.clone());
                     for (path, att) in attachment_paths.iter().zip(&staged) {
                         attachments::seed_attachment(&seed_device, path, &att.name, att.image.clone());
@@ -4815,9 +4215,6 @@ impl Composer {
                         }
                     }
                     content = attachments::with_attachments(&text, &attachment_paths);
-                    // Refresh the echo in place with the attachment refs
-                    // (same id, same clock — the bubble grows its thumbnails
-                    // without flickering).
                     let refreshed = SessionMessageEntry {
                         id: message_id.clone(),
                         role: zeron_doc::MessageRole::User,
@@ -4877,15 +4274,10 @@ impl Composer {
             this.update(cx, |composer, cx| {
                 composer.sending = false;
                 if let Err(message) = result {
-                    // Failure: red banner, echo removed, prompt back in the
-                    // draft, staged files back in the chat's stash.
                     composer.failure = Some(message.into());
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
                         s.end_pending_send(&err_chat_id, &err_message_id);
-                        // Re-staged under the chat's key: a new chat's send has
-                        // already re-keyed the composer to the minted id by
-                        // now, exactly like the staged files below.
                         for comment in &comments {
                             s.add_diff_comment(&err_chat_id, comment.clone());
                         }
@@ -4893,8 +4285,6 @@ impl Composer {
                     });
                     composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
                     if !staged.is_empty() {
-                        // Merge by id (stashAttachments): files the user staged
-                        // while the send was in flight survive the hand-back.
                         let slot = composer.attachments.entry(err_chat_id.clone()).or_default();
                         let mut merged = staged.clone();
                         merged.extend(
@@ -4932,8 +4322,6 @@ impl Composer {
             }
         }));
     }
-
-    // ---- wizard glue ----
 
     fn wizard_select(&mut self, option_ix: usize, cx: &mut Context<Self>) {
         let Some(wizard) = self.wizard.as_mut() else {
@@ -4976,7 +4364,6 @@ impl Composer {
         match wizard.advance() {
             WizardStep::Done(answers) => self.wizard_finish(answers, cx),
             _ => {
-                // Moving on: clear the shared free-text input for the next page.
                 self.input.update(cx, |input, cx| input.set_text("", cx));
                 cx.notify();
             }
@@ -4990,7 +4377,6 @@ impl Composer {
         }
     }
 
-    /// Submit RespondInput and retire the panel.
     fn wizard_finish(&mut self, answers: Vec<UserInputAnswer>, cx: &mut Context<Self>) {
         let Some(wizard) = self.wizard.take() else {
             return;
@@ -4999,7 +4385,6 @@ impl Composer {
         self.answered_requests.insert(wizard.request_id.clone());
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
-            // The panel borrowed the composer input; hand back its identity.
             input.set_placeholder("Do anything…", cx);
         });
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -5022,19 +4407,12 @@ impl Composer {
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
                     composer.failure = Some(format!("Answer failed: {err}").into());
-                    // The answer never left this device — put the panel back.
                     composer.answered_requests.remove(&request_id);
                     cx.notify();
                 })
                 .ok();
                 return;
             }
-            // Safety net against a dead-looking session: the command queued,
-            // but the host may still REJECT it (e.g. the run's resolver is
-            // gone). If the very same request is still the live pending input
-            // once the host has had ample time to execute and the resolved
-            // flag to sync back, the answer demonstrably didn't take —
-            // un-hide the panel instead of leaving the question unanswerable.
             cx.background_executor().timer(Duration::from_secs(2)).await;
             this.update(cx, |composer, cx| {
                 let transcript = composer.state.read(cx).transcript.clone();
@@ -5050,9 +4428,6 @@ impl Composer {
     }
 
     fn on_wizard_key(&mut self, event: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
-        // Keys bubbling out of the free-text input must not double-handle:
-        // digits select options only while the input is empty, and Enter is the
-        // input's own Submit action when it has focus.
         let input_focused = self.input.read(cx).focus_handle.is_focused(window);
         let input_empty = self.input.read(cx).is_empty();
         let key = event.keystroke.key.as_str();
@@ -5061,8 +4436,6 @@ impl Composer {
         {
             if !input_focused || input_empty {
                 self.wizard_select(digit - 1, cx);
-                // Consumed as a selection: stop the platform from also
-                // inserting the digit into the focused free-text input.
                 cx.stop_propagation();
             }
         } else if key == "enter" {
@@ -5076,13 +4449,6 @@ impl Composer {
         }
     }
 
-    // ---- render pieces ----
-
-    /// The agent-asked-a-question panel (zeron question-panel.tsx), rendered in
-    /// place of the composer: the same floating-pill chrome (`rounded-[26px]
-    /// border-white/[0.08] bg-white/[0.03] shadow-xl`), uppercase header +
-    /// "1/3" counter chip, option rows with number kbd chips, a free-text
-    /// override over a hairline, and Back / Next-Submit footer.
     fn render_wizard(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(wizard) = self.wizard.clone() else {
@@ -5098,8 +4464,6 @@ impl Composer {
         let can_advance = wizard.page_has_pick() || !typed_empty;
 
         let options = question.options.iter().enumerate().map(|(ix, label)| {
-            // Selection reads on the row only while no typed override exists
-            // (typed answers win — zeron question-panel.tsx `isSel`).
             let picked = wizard.is_picked(ix) && typed_empty;
             div()
                 .id(("wizard-option", ix))
@@ -5116,7 +4480,6 @@ impl Composer {
                 } else {
                     gpui::transparent_black()
                 })
-                // zeron question-panel.tsx option rows: `transition-colors`.
                 .bg(if picked {
                     crate::theme::ink(0.09)
                 } else {
@@ -5144,7 +4507,6 @@ impl Composer {
                 )
                 .when(ix < 9, |el| {
                     el.child(
-                        // Number kbd chip: `size-[22px] rounded-md text-[11px]`.
                         div()
                             .flex_none()
                             .size(px(22.0))
@@ -5187,7 +4549,6 @@ impl Composer {
                     .pt(px(16.0))
                     .flex()
                     .flex_col()
-                    // Header: tracked uppercase + counter chip when paged.
                     .child(
                         div()
                             .flex()
@@ -5245,8 +4606,6 @@ impl Composer {
                             .gap(px(4.0))
                             .children(options),
                     )
-                    // Free-text override over a hairline (shares the composer
-                    // input entity).
                     .child(
                         div()
                             .mt(px(12.0))
@@ -5292,8 +4651,6 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
-        // Zeron composer-actions.tsx: a size-7 filled circle — up-arrow to
-        // send/steer, a dark rounded square on the same light circle to stop.
         match mode {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
@@ -5310,8 +4667,6 @@ impl Composer {
                 .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
             SendButtonMode::Send | SendButtonMode::Steer => {
-                // Dimmed and inert while no project is picked (`send_blocked`
-                // also gates `on_submit`, so Enter is a no-op too).
                 let blocked = self.send_blocked(cx);
                 div()
                     .id("composer-send")
@@ -5339,8 +4694,6 @@ impl Composer {
     }
 }
 
-/// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
-/// the focused terminal panel is hidden — route here).
 impl Focusable for Composer {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.input.focus_handle(cx)
@@ -5373,12 +4726,8 @@ impl Render for Composer {
             )
         };
         let now = Instant::now();
-        // Only measurements taken *after* the last flip may drive the next one
-        // (at most one flip per layout pass — a flip invalidates the widths).
         let measured_since_flip = epoch > self.flip_epoch && last_width > 0.0;
         if measured_since_flip {
-            // A same-mode width change is an interactive window/pane resize:
-            // freeze the mode until sizes settle for RESIZE_SETTLE_MS.
             if self.last_seen_width > 0.0 && (last_width - self.last_seen_width).abs() > 0.5 {
                 self.width_changed_at = Some(now);
             }
@@ -5388,8 +4737,6 @@ impl Render for Composer {
                     self.expanded_anchor = last_width;
                 }
             } else {
-                // The compact pill's content box is the layout-stable capacity
-                // both thresholds measure against.
                 self.compact_capacity = last_width - 8.0;
             }
         }
@@ -5397,7 +4744,6 @@ impl Render for Composer {
             .width_changed_at
             .is_some_and(|t| now.duration_since(t) < Duration::from_millis(RESIZE_SETTLE_MS));
         if resizing && self.settle_task.is_none() {
-            // Re-evaluate once the settle window has passed.
             self.settle_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(Duration::from_millis(RESIZE_SETTLE_MS + 20))
@@ -5409,14 +4755,11 @@ impl Render for Composer {
                 .ok();
             }));
         }
-        // Layout-stable compact capacity: measured directly while compact;
-        // while expanded, the learned value shifted by any container resize
-        // (the expanded input width tracks the container 1:1).
         let capacity = if !self.expanded_mode {
             if last_width > 0.0 {
                 last_width - 8.0
             } else {
-                f32::MAX // before first measure default to compact
+                f32::MAX
             }
         } else if self.compact_capacity > 0.0 {
             if self.expanded_anchor > 0.0 && last_width > 0.0 {
@@ -5439,15 +4782,9 @@ impl Render for Composer {
             self.expanded_mode = next;
             self.flip_epoch = epoch;
             self.expanded_anchor = 0.0;
-            // The mode change moves the input width; don't read that jump as
-            // an interactive resize.
             self.last_seen_width = 0.0;
         }
-        // New chats render expanded regardless of `expanded_mode` (see below),
-        // so a mode flip there changes nothing visible — never morph it.
         let new_chat = self.state.read(cx).selected_chat.is_none();
-        // Morph clock in ms; dividing by the measurement knob stretches the
-        // timeline exactly like shell.rs eval_tween's scaled duration.
         let now_ms = self.morph_clock.elapsed().as_secs_f32() * 1000.0 / motion::speed_scale();
         let route_snap = self
             .route_snap_until
@@ -5463,7 +4800,6 @@ impl Render for Composer {
         let expanded = self.expanded_mode;
 
         let failure = self.failure.clone();
-        // Centered composer column (zeron `mx-auto w-full max-w-3xl`).
         let container = div()
             .w_full()
             .max_w(px(768.0))
@@ -5474,15 +4810,9 @@ impl Render for Composer {
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
             .when_some(failure, |el, message| {
-                // zeron composer.tsx `Notice` (matches the transcript
-                // ErrorChip palette): `flex items-start gap-2 rounded-xl
-                // border px-3 py-2 text-[12px] leading-snug` with a 14px
-                // DangerTriangle — a subtle tinted wash, not a bare red
-                // stroke. Amber for the offline-ish case (engine not
-                // connected), red for send/run failures. Click dismisses.
                 let offline = message.as_ref() == "Engine not connected";
                 let (border_c, wash, text_c) = if offline {
-                    let amber = theme.warning; // amber-400
+                    let amber = theme.warning;
                     let amber_200 = theme.warning_muted;
                     (
                         amber.opacity(0.16),
@@ -5490,7 +4820,7 @@ impl Render for Composer {
                         amber_200.opacity(0.9),
                     )
                 } else {
-                    let danger = theme.danger; // red-400
+                    let danger = theme.danger;
                     let red_300 = theme.danger_muted;
                     (
                         danger.opacity(0.16),
@@ -5530,11 +4860,6 @@ impl Render for Composer {
                 )
             });
 
-        // Turn-boundary steering notice: for agents without mid-turn
-        // injection (Grok over ACP today), a "steer" is queued and applies
-        // when the current turn finishes. Without this hint the queue read
-        // as a dropped steer (user report: "my steer didn't apply until
-        // grok already finished").
         let steer_queues = mode == SendButtonMode::Steer
             && self.pickers.read(cx).resolved_steering_mode(cx)
                 == Some(zeron_proto::SteeringMode::TurnBoundary);
@@ -5555,16 +4880,8 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
 
-        // New chats always use the expanded layout: the repo/branch pickers
-        // need the full-width actions row (zeron composer-actions.tsx
-        // `mustExpand = isNew || …`).
         let expanded = expanded || new_chat;
 
-        // Committed-height morph: the layout below is already the NEW mode's;
-        // only the pill's height (and the entrance fade/text glide driven by
-        // `morph_t`) animates. Steady state renders exactly the target.
-        // Staged attachments add the wrap strip's height to the pill in BOTH
-        // modes (attachment-ui.tsx AttachmentStrip sits above the input row).
         let staged_count = self.staged().len();
         let strip_width_hint = if last_width > 0.0 { last_width } else { 720.0 };
         let strip_h = attachment_strip_height(staged_count, strip_width_hint);
@@ -5584,16 +4901,11 @@ impl Render for Composer {
         if !morphing {
             self.flip_morph = None;
         } else {
-            // Manual tween drive: keep frames coming (shell.rs motion_active).
             window.request_animation_frame();
         }
         self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
-        // Attach button — opens the native image picker (the original's hidden
-        // `<input type=file accept="image/*" multiple>`); paste/drop also feed
-        // the same strip. `ml-1` per the source cluster — chips→attach reads
-        // 8px (4 gap + 4 margin) in BOTH modes.
         let attach = div()
             .id("composer-attach")
             .ml(px(4.0))
@@ -5604,7 +4916,6 @@ impl Render for Composer {
             .justify_center()
             .rounded_full()
             .cursor_pointer()
-            // zeron composer-actions.tsx attach: `transition-colors`.
             .bg(motion::hover_blend(
                 "composer-attach",
                 gpui::transparent_black(),
@@ -5617,41 +4928,18 @@ impl Render for Composer {
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             );
-        // Staged-thumbnail strip (attachment-ui.tsx AttachmentStrip), above
-        // the input inside the pill in both modes.
         let strip = self.render_attachment_strip(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
-        // The pill chrome (zeron composer.tsx): `rounded-[26px] border
-        // border-white/[0.08] bg-white/[0.03] shadow-xl` — a floating pill with
-        // a hairline over a faint wash, never a solid grey box. Picker chips,
-        // attach, and the send circle all live INSIDE the pill.
         let pill_bg = theme.input_glass_bg();
-        // No drop shadow on glass: it paints BEHIND the translucent fill and
-        // shows through as an inner glow (theme.rs's card_selected_shadows
-        // lesson; user report).
         let pill = div()
             .rounded(px(26.0))
             .bg(pill_bg)
             .border_1()
             .border_color(theme.border)
             .when(!theme.is_glass(), |el| el.shadow_lg());
-        // The pill's bottom edge is stationary on screen (the composer sits at
-        // the bottom of the shell column; growth moves the TOP edge), so the
-        // controls pin to the bottom and only the text glides with the reveal
-        // (round-9 follow-up: the send/attach/chips must not ride the height,
-        // and none of them fade — the full cluster stays visible throughout).
         let cluster_dy = morph_cluster_dy(morph_t);
         let body = if expanded {
-            // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row
-            // (`px-3 pb-2.5 pt-1`, h-8 chips → 46px) ABSOLUTE at the pill's
-            // stationary bottom — constant screen-y through the morph, with
-            // the 2.5px compact↔expanded centering delta gliding out. The
-            // text container is laid out at TARGET size (committed layout
-            // never reflows mid-tween — the caret can't jump); its top pad
-            // eases 12→16 so the first line glides from its compact resting
-            // place. The whole control cluster stays at full alpha — chips,
-            // attach and send are all (near-)stationary on the bottom anchor.
             let text_pt = morph_text_pad(morph_t);
             pill.h(px(pill_height))
                 .overflow_hidden()
@@ -5680,10 +4968,6 @@ impl Render for Composer {
                         .flex()
                         .flex_row()
                         .items_center()
-                        // Shared cluster metrics (see CLUSTER_X_DELTA): gap-1
-                        // internals identical to compact; only the right
-                        // inset (`px-3` 12) differs, and it GLIDES in from
-                        // the compact 8 so the buttons never step sideways.
                         .gap(px(4.0))
                         .pl(px(12.0))
                         .pr(px(morph_cluster_inset(true, morph_t)))
@@ -5694,14 +4978,6 @@ impl Render for Composer {
                         .child(send_button),
                 )
         } else {
-            // Compact pill: input and the actions cluster on one 47px line
-            // (`py-3 pl-4 pr-2` textarea, `gap-2 py-1.5 pl-1 pr-2` cluster;
-            // the 22.75px line centers to the same 12px inset as `py-3`).
-            // The row is BOTTOM-justified: during the collapse morph the pill
-            // top sweeps down over a stationary row, the text walks down from
-            // its expanded resting place via a decaying relative offset, and
-            // the whole inline cluster (chips + attach/send) holds its spot at
-            // full alpha (2.5px centering delta gliding in).
             let text_glide = match self.flip_morph {
                 Some(m) if morphing => collapse_text_glide(m.from, morph_t),
                 _ => 0.0,
@@ -5735,10 +5011,6 @@ impl Render for Composer {
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                // Shared cluster metrics (`gap-1 pl-1 pr-2`,
-                                // zeron composer-actions.tsx): identical
-                                // internals to expanded; the right inset
-                                // glides 12→8 on collapse.
                                 .gap(px(4.0))
                                 .pl(px(4.0))
                                 .pr(px(morph_cluster_inset(false, morph_t)))
@@ -5750,19 +5022,11 @@ impl Render for Composer {
                         ),
                 )
         };
-        // The file dropzone lives in the shell (the whole conversation column,
-        // not just the pill — shell.rs `chat-dropzone`); drops land back here
-        // via `add_paths`.
-        // Frosted: the pill backdrop-blurs the transcript scrolling under it
-        // (the popover glass treatment; radius matches the pill's rounding).
         let container = container.child(crate::frost::frosted(
             26.0,
             16.0,
             motion::fade_quick("composer-input", body),
         ));
-        // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
-        // checkout-kind selector + ref picker for new sessions, read-only
-        // labels once the session exists. Git spaces only.
         let footer = self
             .pickers
             .update(cx, |pickers, cx| pickers.render_footer(cx));
@@ -5770,7 +5034,6 @@ impl Render for Composer {
             Some(footer) => container.child(footer),
             None => container,
         };
-        // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
         if let Some(preview) = self.preview.clone() {
             if std::mem::take(&mut self.preview_focus_pending) {
                 window.focus(&self.preview_focus, cx);
@@ -5781,8 +5044,6 @@ impl Render for Composer {
                 &preview,
                 &self.preview_focus,
                 move |window, cx| {
-                    // Hand focus back to the input so typing (and the next
-                    // Escape) lands where it did before the lightbox opened.
                     if let Ok(input_focus) = weak.update(cx, |this, cx| {
                         this.preview = None;
                         cx.notify();
@@ -5909,7 +5170,6 @@ mod tests {
                 query: "comp".into(),
             })
         );
-        // Token range spans the whole command word even mid-cursor.
         assert_eq!(
             slash_token("/compact now", 3),
             Some(MentionToken {
@@ -5917,13 +5177,9 @@ mod tests {
                 query: "co".into(),
             })
         );
-        // Not at offset 0 → prose, not a command.
         assert!(slash_token("run /compact", 12).is_none());
-        // Cursor past the command word (typing the argument) → closed.
         assert!(slash_token("/goal ship it", 10).is_none());
-        // A typed absolute path is not a command.
         assert!(slash_token("/usr/bin", 8).is_none());
-        // Bare "/" with cursor at 0 → closed; cursor after it → open-all.
         assert!(slash_token("/", 0).is_none());
         assert_eq!(slash_token("/", 1).map(|t| t.query), Some(String::new()));
     }
@@ -6054,8 +5310,6 @@ mod tests {
         assert_eq!(spans[1].path.as_ref(), "src/components/");
     }
 
-    /// Ordinary prompts must stay on the zero-cost path, including ones that
-    /// merely *talk about* the scheme without containing a valid mention.
     #[test]
     fn sent_mention_display_leaves_plain_prompts_untouched() {
         assert_eq!(sent_mention_display("fix the composer"), None);
@@ -6083,14 +5337,10 @@ mod tests {
 
     #[test]
     fn flip_decision() {
-        // Fits in the pill → compact stays compact.
         assert!(!composer_flip(false, 150.0, 300.0, false, false));
-        // Overflow → expand.
         assert!(composer_flip(false, 320.0, 300.0, false, false));
-        // Newline always expands (either mode, even mid-resize).
         assert!(composer_flip(false, 10.0, 300.0, true, false));
         assert!(composer_flip(true, 10.0, 300.0, true, true));
-        // Narrow column (< MIN_COMPACT_INPUT_WIDTH) always expands.
         assert!(composer_flip(false, 10.0, 199.0, false, false));
         assert!(!composer_flip(false, 10.0, 200.0, false, false));
     }
@@ -6098,17 +5348,11 @@ mod tests {
     #[test]
     fn flip_hysteresis_band_prevents_oscillation() {
         let cap = 300.0;
-        // Text just over capacity expands…
         assert!(composer_flip(false, cap + 1.0, cap, false, false));
-        // …and the SAME width, now expanded, does NOT collapse back — the
-        // collapse threshold sits COLLAPSE_HYSTERESIS below the expand one.
         assert!(composer_flip(true, cap + 1.0, cap, false, false));
-        // Anywhere inside the band the two modes are both stable (no width in
-        // (cap - 32, cap] flips in either direction).
         let in_band = cap - COLLAPSE_HYSTERESIS + 1.0;
         assert!(!composer_flip(false, in_band, cap, false, false));
         assert!(composer_flip(true, in_band, cap, false, false));
-        // Comfortably under the band → collapses.
         assert!(!composer_flip(
             true,
             cap - COLLAPSE_HYSTERESIS - 1.0,
@@ -6120,12 +5364,9 @@ mod tests {
 
     #[test]
     fn flip_frozen_during_interactive_resize() {
-        // While resizing, both modes hold even across their thresholds…
         assert!(!composer_flip(false, 500.0, 300.0, false, true));
         assert!(composer_flip(true, 0.0, 300.0, false, true));
-        // …including the narrow-column force-expand.
         assert!(!composer_flip(false, 10.0, 150.0, false, true));
-        // Once settled, the same inputs flip.
         assert!(composer_flip(false, 500.0, 300.0, false, false));
         assert!(!composer_flip(true, 0.0, 300.0, false, false));
         assert!(composer_flip(false, 10.0, 150.0, false, false));
@@ -6133,10 +5374,8 @@ mod tests {
 
     #[test]
     fn caret_blink_phase() {
-        // Solid through the first half-period (typing burst never blinks).
         assert!(caret_visible(0));
         assert!(caret_visible(CARET_BLINK_MS - 1));
-        // Off for the second half-period, back on for the third.
         assert!(!caret_visible(CARET_BLINK_MS));
         assert!(!caret_visible(2 * CARET_BLINK_MS - 1));
         assert!(caret_visible(2 * CARET_BLINK_MS));
@@ -6144,52 +5383,39 @@ mod tests {
 
     #[test]
     fn auto_grow_math() {
-        // The source heights (zeron composer.tsx line 235 clamp, composer-
-        // actions.tsx row, 1px hairlines): 76+46+2 empty … 260+46+2 capped.
         assert_eq!(COMPOSER_MIN_HEIGHT, 124.0);
         assert_eq!(COMPOSER_MAX_HEIGHT, 308.0);
-        // One line sits at the floor: the textarea BOX (content + `pt-4 pb-1`)
-        // clamps UP to 76 exactly like `Math.max(scrollHeight, 76)` — this is
-        // what makes the always-expanded new-chat composer 124px tall.
         assert_eq!(
             composer_total_height(input_content_height(1)),
             COMPOSER_MIN_HEIGHT
         );
-        // Growth is linear once the textarea box exceeds its 76px floor.
         let h4 = composer_total_height(input_content_height(4));
         assert_eq!(
             h4,
             4.0 * INPUT_LINE_HEIGHT + TEXTAREA_PAD_V + ACTIONS_ROW_HEIGHT + PILL_BORDER_V
         );
-        // Caps at a 260px textarea box (zeron max-h-[260px] / the JS clamp).
         assert_eq!(
             composer_total_height(input_content_height(100)),
             COMPOSER_MAX_HEIGHT
         );
-        // Zero lines still measures one.
         assert_eq!(input_content_height(0), INPUT_LINE_HEIGHT);
     }
 
     #[test]
     fn input_wheel_scroll_uses_gpui_direction_and_clamps() {
-        // Positive wheel delta moves toward the start; negative moves down.
         assert_eq!(input_scroll_offset(40.0, 20.0, 200.0, 100.0), 20.0);
         assert_eq!(input_scroll_offset(40.0, -30.0, 200.0, 100.0), 70.0);
-        // Neither edge can be overscrolled.
         assert_eq!(input_scroll_offset(10.0, 50.0, 200.0, 100.0), 0.0);
         assert_eq!(input_scroll_offset(90.0, -50.0, 200.0, 100.0), 100.0);
-        // Short content has no internal scroll range.
         assert_eq!(input_scroll_offset(20.0, -50.0, 80.0, 100.0), 0.0);
     }
 
     #[test]
     fn input_scroll_reveals_only_when_caret_leaves_viewport() {
-        // A visible caret preserves the user's viewport.
         assert_eq!(
             input_scroll_offset_for_cursor(40.0, 60.0, 20.0, 300.0, 100.0),
             40.0
         );
-        // Moving above or below reveals the row with the smallest adjustment.
         assert_eq!(
             input_scroll_offset_for_cursor(80.0, 30.0, 20.0, 300.0, 100.0),
             30.0
@@ -6198,7 +5424,6 @@ mod tests {
             input_scroll_offset_for_cursor(20.0, 130.0, 20.0, 300.0, 100.0),
             50.0
         );
-        // Revealing the final row clamps exactly to the content end.
         assert_eq!(
             input_scroll_offset_for_cursor(0.0, 290.0, 20.0, 300.0, 100.0),
             200.0
@@ -6217,24 +5442,18 @@ mod tests {
         assert_eq!(input_drag_scroll_delta(500.0, top, bottom, line), line);
     }
 
-    /// One frame short of the full morph timeline (never rounds up to done).
     const ALMOST: f32 = 179.0;
 
     #[test]
     fn flip_morph_starts_once_per_committed_flip() {
-        // No committed flip → no morph.
         assert_eq!(flip_morph_step(None, false, 49.0, 0.0, false, false), None);
-        // A committed flip starts one, from the last rendered height…
         let m = flip_morph_step(None, true, 49.0, 100.0, false, false).unwrap();
         assert_eq!(m.from, 49.0);
         assert_eq!(m.start_ms, 100.0);
-        // …and same-mode renders keep it UNCHANGED (no restart at the
-        // boundary, whatever the heights are doing).
         assert_eq!(
             flip_morph_step(Some(m), false, 80.0, 150.0, false, false),
             Some(m)
         );
-        // A finished morph clears on the next same-mode render.
         assert_eq!(
             flip_morph_step(Some(m), false, 124.0, 100.0 + ALMOST, false, false),
             Some(m)
@@ -6251,20 +5470,16 @@ mod tests {
             from: 49.0,
             start_ms: 0.0,
         };
-        // Starts exactly at the committed height…
         let mut prev = m.height(124.0, 0.0);
         assert_eq!(prev, 49.0);
-        // …ramps without ever moving backwards…
         for step in 1..=18 {
             let h = m.height(124.0, step as f32 * 10.0);
             assert!(h >= prev, "height regressed at {step}: {h} < {prev}");
             prev = h;
         }
-        // …and lands exactly on the target when done (and stays there).
         assert_eq!(m.height(124.0, 180.0), 124.0);
         assert!(m.done(180.0));
         assert_eq!(m.height(124.0, 500.0), 124.0);
-        // Collapse runs the same ramp downward.
         assert!(m.height(124.0, 90.0) > 49.0);
         let down = FlipMorph {
             from: 124.0,
@@ -6282,8 +5497,6 @@ mod tests {
         };
         let mid = m.height(124.0, 90.0);
         assert!(mid > 49.0 && mid < 124.0);
-        // A reverse flip mid-flight commits a new morph FROM the animated
-        // height — continuous at the handoff, no pop to an endpoint.
         let rev = flip_morph_step(Some(m), true, mid, 90.0, false, false).unwrap();
         assert_eq!(rev.from, mid);
         assert_eq!(rev.height(49.0, 90.0), mid);
@@ -6291,19 +5504,13 @@ mod tests {
 
     #[test]
     fn flip_morph_snaps_for_reduced_motion_and_first_paint() {
-        // Reduced motion never creates a morph (the flip just snaps)…
         assert_eq!(flip_morph_step(None, true, 49.0, 0.0, true, false), None);
-        // …and neither does a flip before anything was ever rendered.
         assert_eq!(flip_morph_step(None, true, 0.0, 0.0, false, false), None);
     }
 
     #[test]
     fn route_change_never_arms_the_morph() {
-        // A flip committed inside the route-snap window must NOT animate —
-        // switching sessions (chat↔chat or chat↔new-session) snaps the
-        // composer straight to the target mode, like the header (round 6).
         assert_eq!(flip_morph_step(None, true, 49.0, 0.0, false, true), None);
-        // The route change also kills anything already in flight…
         let m = FlipMorph {
             from: 49.0,
             start_ms: 0.0,
@@ -6316,53 +5523,39 @@ mod tests {
             flip_morph_step(Some(m), true, 80.0, 50.0, false, true),
             None
         );
-        // …while outside the window the same flip animates as usual.
         let armed = flip_morph_step(None, true, 49.0, 300.0, false, false).unwrap();
         assert_eq!(armed.from, 49.0);
     }
 
     #[test]
     fn morph_anchoring_holds_controls_and_glides_text() {
-        // Steady state (progress 1): no offsets, everything at rest.
         assert_eq!(morph_cluster_dy(1.0), 0.0);
         assert_eq!(morph_text_pad(1.0), 16.0);
         assert_eq!(collapse_text_glide(124.0, 1.0), 0.0);
-        // At the commit instant the pieces start from the OLD mode's resting
-        // geometry: text pad at the compact 12px inset, cluster displaced by
-        // exactly the 2.5px centering delta.
         assert_eq!(morph_text_pad(0.0), 12.0);
         assert_eq!(morph_cluster_dy(0.0), CLUSTER_Y_DELTA);
-        // Collapse glide: starts where the expanded text sat (17px below the
-        // committed pill top → `from − 53` above the compact resting spot)…
         assert_eq!(collapse_text_glide(124.0, 0.0), 71.0);
-        // …decays monotonically to zero…
         let mut prev = collapse_text_glide(124.0, 0.0);
         for step in 1..=10 {
             let g = collapse_text_glide(124.0, step as f32 / 10.0);
             assert!(g <= prev, "glide regressed at {step}");
             prev = g;
         }
-        // …and can't go negative on shallow mid-flight reversals.
         assert_eq!(collapse_text_glide(50.0, 0.0), 0.0);
     }
 
     #[test]
     fn cluster_inset_glides_between_the_source_endpoints() {
-        // The morph starts from the OLD mode's resting inset (no sideways
-        // step at the commit) and eases to the committed mode's…
-        assert_eq!(morph_cluster_inset(true, 0.0), 8.0); // expand: from compact pr-2
-        assert_eq!(morph_cluster_inset(true, 1.0), 12.0); // …to expanded px-3
-        assert_eq!(morph_cluster_inset(false, 0.0), 12.0); // collapse: from px-3
-        assert_eq!(morph_cluster_inset(false, 1.0), 8.0); // …to pr-2
-        // …monotonically, bounded by the 4px source delta.
+        assert_eq!(morph_cluster_inset(true, 0.0), 8.0);
+        assert_eq!(morph_cluster_inset(true, 1.0), 12.0);
+        assert_eq!(morph_cluster_inset(false, 0.0), 12.0);
+        assert_eq!(morph_cluster_inset(false, 1.0), 8.0);
         let mut prev = morph_cluster_inset(true, 0.0);
         for step in 1..=10 {
             let v = morph_cluster_inset(true, step as f32 / 10.0);
             assert!(v >= prev && v <= 8.0 + CLUSTER_X_DELTA);
             prev = v;
         }
-        // Internal spacing is SHARED between modes (one cluster in the
-        // source) — only this wrapper inset may differ across the flip.
     }
 
     #[test]
@@ -6371,10 +5564,7 @@ mod tests {
             from: 49.0,
             start_ms: 0.0,
         };
-        // Auto-grow can move the target mid-morph: evaluation tracks the
-        // live value instead of finishing on a stale height.
         assert!(m.height(159.0, 90.0) > m.height(124.0, 90.0));
-        // The eased progress is the actions-row fade: 0 at commit, 1 at rest.
         assert_eq!(m.progress(0.0), 0.0);
         assert_eq!(m.progress(180.0), 1.0);
         let mid = m.progress(90.0);
@@ -6398,7 +5588,6 @@ mod tests {
             SendButtonMode::Steer,
             "comment-only submit must steer, not interrupt the run"
         );
-        // Nothing staged at all is still the stop square.
         assert_eq!(
             send_button_mode(live, composer_has_content("", 0, 0)),
             SendButtonMode::Stop
@@ -6442,7 +5631,6 @@ mod tests {
         assert_eq!(w.select(0), WizardStep::Stay);
         assert_eq!(w.select(2), WizardStep::Stay);
         assert!(w.is_picked(0) && w.is_picked(2));
-        // Toggle off.
         assert_eq!(w.select(0), WizardStep::Stay);
         assert!(!w.is_picked(0));
         let WizardStep::Done(answers) = w.advance() else {
@@ -6507,7 +5695,6 @@ mod tests {
             status,
             continuation_of: None,
         };
-        // Streaming entry with unresolved input → panel.
         let t = vec![entry(
             Some(MessageStatus::Streaming),
             vec![input_part.clone()],
@@ -6516,10 +5703,6 @@ mod tests {
             pending_input_request(&t).map(|(id, _)| id),
             Some("r1".into())
         );
-        // DEAD entry with an unresolved input STILL gets the panel: the
-        // question stays answerable until answered (the engine delivers the
-        // answer as a resumed turn), so a run reaped under its question —
-        // engine restart — must not orphan it (user report).
         let t = vec![entry(
             Some(MessageStatus::Aborted),
             vec![input_part.clone()],
@@ -6528,7 +5711,6 @@ mod tests {
             pending_input_request(&t).map(|(id, _)| id),
             Some("r1".into())
         );
-        // A NEWER assistant entry supersedes an unanswered question.
         let t = vec![
             entry(Some(MessageStatus::Aborted), vec![input_part.clone()]),
             SessionMessageEntry {
@@ -6545,7 +5727,6 @@ mod tests {
             },
         ];
         assert!(pending_input_request(&t).is_none());
-        // Resolved part → no panel.
         let resolved = MessagePart::Input {
             id: "in-r1".into(),
             request_id: "r1".into(),
@@ -6559,10 +5740,6 @@ mod tests {
         assert!(pending_input_request(&t).is_none());
         assert!(pending_input_request(&[]).is_none());
 
-        // Regression (user forensics): a steer prompt appends a USER entry
-        // AFTER the streaming assistant entry — the question must still be
-        // found (a last-entry-only read vanished the panel exactly when the
-        // user typed, bricking the answer flow).
         let user_echo = SessionMessageEntry {
             id: "u2".into(),
             role: MessageRole::User,
@@ -6585,7 +5762,6 @@ mod tests {
             "question survives entries appended behind the streaming entry"
         );
 
-        // Latch release: only an explicitly resolved matching part releases.
         assert!(!input_request_resolved(&t, "r1"));
         let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
         assert!(input_request_resolved(&t, "r1"));

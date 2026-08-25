@@ -1,12 +1,9 @@
-//! zeron-ui — the gpui viewport. Shell, sidebar, conversation, composer, terminal,
-//! diff pane. Design-system primitives come from [`onyx_ui`].
-
 pub use onyx_ui::gpui;
 pub use onyx_ui::gpui_platform;
 
 pub use onyx_ui::{
-    appearance, badges, edge_fade, frost, icons, loaders, markdown, motion, popover,
-    syntax_cache, theme,
+    appearance, badges, edge_fade, frost, icons, loaders, markdown, motion, popover, syntax_cache,
+    theme,
 };
 
 pub mod app_menus;
@@ -24,6 +21,7 @@ pub mod sound;
 pub mod state;
 pub mod terminal;
 pub mod transcript;
+pub mod view;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};

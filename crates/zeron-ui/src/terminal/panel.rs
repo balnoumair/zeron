@@ -1,18 +1,3 @@
-//! The terminal panel: session-scoped tabs over engine PTYs.
-//!
-//! Feature-inventory §1.10: tabs are per selected chat and restored on return
-//! (emulators — and their server-side PTYs — survive navigation; detach is not
-//! close). Tab bar supports pointer drag-reorder with 150 ms sliding
-//! transforms, middle-click close, and a "+" new-tab button; Cmd/Ctrl+J
-//! toggles the panel (the shell owns the height animation + persistence).
-//!
-//! Data path per tab: `OpenTerminal` → `SubscribeTerminal` stream; Data frames
-//! (base64) feed the [`Emulator`]; query responses write back; the stream
-//! reconnects with exponential backoff resuming from `afterSeq`; Exit appends
-//! the "[process exited N]" line and stops. Keyboard bytes coalesce for 12 ms
-//! before `WriteTerminal`; viewport-driven resizes debounce 80 ms before
-//! `ResizeTerminal` (the emulator resizes immediately).
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -38,13 +23,11 @@ use super::view::{
     paste_bytes, terminal_panel_bg,
 };
 
-/// Fixed tab width — drag-reorder math stays analytic.
 pub const TAB_WIDTH: f32 = 118.0;
 pub const TAB_BAR_HEIGHT: f32 = 40.0;
 
 actions!(terminal, [ToggleTerminal]);
 
-/// Bind the terminal keymap (global): Cmd+J on macOS, Ctrl+J elsewhere.
 pub fn init(cx: &mut App) {
     let toggle = if cfg!(target_os = "macos") {
         "cmd-j"
@@ -54,11 +37,6 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(toggle, ToggleTerminal, None)]);
 }
 
-// ---------------------------------------------------------------------------
-// Pure logic (unit-tested)
-// ---------------------------------------------------------------------------
-
-/// Panel height clamp: 160 px … 55 % of the viewport (§1.10).
 pub fn clamp_terminal_height(height: f32, viewport_h: f32) -> f32 {
     let max = (viewport_h * TERMINAL_MAX_VH).max(TERMINAL_MIN_HEIGHT);
     if height.is_finite() {
@@ -68,12 +46,10 @@ pub fn clamp_terminal_height(height: f32, viewport_h: f32) -> f32 {
     }
 }
 
-/// Reconnect backoff: 500 ms doubling to an 8 s ceiling.
 pub fn backoff_ms(attempt: u32) -> u64 {
     (500u64 << attempt.min(4)).min(8_000)
 }
 
-/// Move a tab from `from` to `to` (indices into the same vec).
 pub fn reorder_tabs<T>(tabs: &mut Vec<T>, from: usize, to: usize) {
     if from >= tabs.len() || to >= tabs.len() || from == to {
         return;
@@ -82,7 +58,6 @@ pub fn reorder_tabs<T>(tabs: &mut Vec<T>, from: usize, to: usize) {
     tabs.insert(to, tab);
 }
 
-/// Where a drag hovering at `rel_x` inside the tab strip would land.
 pub fn drop_index(rel_x: f32, tab_w: f32, count: usize) -> usize {
     if count == 0 || tab_w <= 0.0 {
         return 0;
@@ -90,8 +65,6 @@ pub fn drop_index(rel_x: f32, tab_w: f32, count: usize) -> usize {
     ((rel_x / tab_w).floor().max(0.0) as usize).min(count - 1)
 }
 
-/// Sliding transform (in tab-width units) for tab `ix` while `from` is dragged
-/// over `over`: tabs between the two shift one slot toward the vacated gap.
 pub fn slide_offset(ix: usize, from: usize, over: usize) -> f32 {
     if from < over && ix > from && ix <= over {
         -1.0
@@ -102,7 +75,6 @@ pub fn slide_offset(ix: usize, from: usize, over: usize) -> f32 {
     }
 }
 
-/// Active index after a reorder commit.
 pub fn active_after_reorder(active: usize, from: usize, to: usize) -> usize {
     if active == from {
         to
@@ -115,8 +87,6 @@ pub fn active_after_reorder(active: usize, from: usize, to: usize) -> usize {
     }
 }
 
-/// Merge the `targetDeviceId` passthrough into RPC params (no-op for chats on
-/// the connected engine's own device).
 fn with_target(mut params: serde_json::Value, target: &Option<String>) -> serde_json::Value {
     if let (Some(target), Some(object)) = (target, params.as_object_mut()) {
         object.insert(
@@ -127,7 +97,6 @@ fn with_target(mut params: serde_json::Value, target: &Option<String>) -> serde_
     params
 }
 
-/// Active index after closing `closed` (given the new, shorter length).
 pub fn active_after_close(active: usize, closed: usize, len_after: usize) -> usize {
     let shifted = if closed < active { active - 1 } else { active };
     if len_after == 0 {
@@ -137,12 +106,10 @@ pub fn active_after_close(active: usize, closed: usize, len_after: usize) -> usi
     }
 }
 
-/// The `[process exited N]` trailer, dimmed (§1.10).
 pub fn exit_message(code: i32) -> Vec<u8> {
     format!("\r\n\x1b[90m[process exited {code}]\x1b[0m\r\n").into_bytes()
 }
 
-/// Tab title from the session's shell path ("/bin/zsh" → "zsh").
 pub fn shell_title(shell: &str) -> String {
     let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell).trim();
     if name.is_empty() {
@@ -166,21 +133,8 @@ fn encode_base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-// ---------------------------------------------------------------------------
-// Entity
-// ---------------------------------------------------------------------------
-
-/// An in-flight left-button gesture.
-///
-/// A press alone does not select. It arms this, and only pointer travel past
-/// [`SELECTION_DRAG_THRESHOLD`] promotes it to a real selection — otherwise the
-/// click that focuses the panel would leave a one-cell selection behind
-/// whenever the hand moves a pixel.
 #[derive(Debug, Clone, Copy)]
 struct SelectionDrag {
-    /// Press position, in window space: both the threshold origin and the
-    /// selection's anchor, so the selection starts where the press landed
-    /// rather than where the threshold happened to trip.
     origin: gpui::Point<Pixels>,
     armed: bool,
 }
@@ -195,7 +149,6 @@ struct TerminalTab {
     coalescer: InputCoalescer,
     flush_task: Option<Task<()>>,
     resize_task: Option<Task<()>>,
-    /// Open + subscribe/reconnect lifecycle; dropping it cancels the stream.
     _run: Option<Task<()>>,
 }
 
@@ -205,7 +158,6 @@ struct ChatTabs {
     active: usize,
 }
 
-/// Drag-reorder state; `epoch` keys the 150 ms slide animation restarts.
 struct DragState {
     from: usize,
     over: usize,
@@ -213,7 +165,6 @@ struct DragState {
     prev_over: usize,
 }
 
-/// The dragged-tab payload (gpui drag-and-drop).
 struct TabDragPayload {
     chat: String,
     from: usize,
@@ -248,19 +199,12 @@ pub struct TerminalPanel {
     state: Entity<AppState>,
     focus_handle: FocusHandle,
     chats: HashMap<String, ChatTabs>,
-    /// Shell-driven visibility gate: no RPC happens while closed (lazy).
     open: bool,
-    /// Right-pane surface host mode: the SHELL owns the tab strip (surface
-    /// tabs), so the internal bar hides, tabs are only ever created
-    /// explicitly (no ensure-on-open/chat-switch), and closing the last tab
-    /// must not dispatch the bottom drawer's [`ToggleTerminal`].
     embedded: bool,
     tab_seq: u64,
     drag: Option<DragState>,
     last_selected: Option<String>,
-    /// Last reported grid placement; `None` until the first prepaint.
     geometry: Option<GridGeometry>,
-    /// Left-button gesture in flight, if any.
     selection_drag: Option<SelectionDrag>,
     _observe: Subscription,
 }
@@ -283,7 +227,6 @@ impl TerminalPanel {
         }
     }
 
-    /// A panel in right-pane surface-host mode (see the `embedded` field).
     pub fn new_embedded(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let mut panel = Self::new(state, cx);
         panel.embedded = true;
@@ -294,9 +237,6 @@ impl TerminalPanel {
         self.focus_handle.clone()
     }
 
-    /// Shell toggle hook. Opening lazily creates the first tab for the
-    /// selected chat (drawer mode; embedded tabs are explicit); closing
-    /// keeps every session alive (detach ≠ close).
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.open = open;
         if open && !self.embedded {
@@ -305,10 +245,6 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    /// A tab's display label: the live OSC 0/2 title when the running
-    /// program set one (shells title themselves with the cwd / running
-    /// command — the contextual name, user request), else the fixed
-    /// "Terminal N".
     fn display_title(tab: &TerminalTab) -> SharedString {
         match tab.emulator.title().map(str::trim) {
             Some(title) if !title.is_empty() => title.to_string().into(),
@@ -316,10 +252,6 @@ impl TerminalPanel {
         }
     }
 
-    // ---- embedded (right-pane surface) API — the shell's tab strip drives
-    // ---- these; keys are stable across reorders/closes.
-
-    /// `(key, title, exited)` for the selected chat's tabs, in tab order.
     pub fn tab_summaries(&self, cx: &App) -> Vec<(u64, SharedString, bool)> {
         let Some(chat) = self.selected_chat(cx) else {
             return Vec::new();
@@ -335,14 +267,12 @@ impl TerminalPanel {
             .unwrap_or_default()
     }
 
-    /// Open a fresh tab for the selected chat and return its key.
     pub fn open_tab_for_selected(&mut self, cx: &mut Context<Self>) -> Option<u64> {
         let chat = self.selected_chat(cx)?;
         self.open_tab(chat, cx);
         Some(self.tab_seq)
     }
 
-    /// Make `key` the rendered tab of the selected chat.
     pub fn select_tab_by_key(&mut self, key: u64, cx: &mut Context<Self>) {
         let Some(chat) = self.selected_chat(cx) else {
             return;
@@ -357,7 +287,6 @@ impl TerminalPanel {
         self.select_tab(&chat, ix, cx);
     }
 
-    /// Close the selected chat's tab `key` (surface-tab ✕).
     pub fn close_tab_by_key(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(chat) = self.selected_chat(cx) else {
             return;
@@ -373,11 +302,6 @@ impl TerminalPanel {
             self.drag = None;
         }
         if self.open && !self.embedded {
-            // Returning to a chat with tabs restores them; a fresh chat (or an
-            // engine that only just finished booting) gets its first tab —
-            // ensure_tab is idempotent, so calling on every state change is safe.
-            // Embedded: surface tabs are explicit — a chat switch just shows
-            // that chat's own tabs (or the shell's surface picker).
             self.ensure_tab(cx);
         }
         if switched {
@@ -389,12 +313,6 @@ impl TerminalPanel {
         self.state.read(cx).engine().cloned()
     }
 
-    /// The chat's host device when it differs from the connected engine's own —
-    /// the PTY lives on the chat's device (feature-inventory §2.1 "terminals
-    /// live on the chat's host device"), so every terminal RPC for a remote
-    /// chat needs the `targetDeviceId` passthrough. Without it the local
-    /// engine checks the chat's cwd against its OWN filesystem and fails with
-    /// "Session working directory is unavailable" (user report).
     fn chat_target(&self, chat: &str, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
         let device = state.chats.iter().find(|c| c.id == chat)?.device_id.clone();
@@ -428,8 +346,6 @@ impl TerminalPanel {
         tabs.tabs.get(tabs.active)
     }
 
-    // ---- open / stream lifecycle ----
-
     fn open_tab(&mut self, chat: String, cx: &mut Context<Self>) {
         let Some(engine) = self.engine(cx) else {
             return;
@@ -460,7 +376,6 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    /// OpenTerminal, then pump SubscribeTerminal with reconnect backoff.
     fn spawn_session(
         chat: String,
         key: u64,
@@ -518,7 +433,6 @@ impl TerminalPanel {
                 })
                 .unwrap_or(false);
             if !attached {
-                // Tab was closed before the open completed — release the PTY.
                 let _ = engine
                     .client()
                     .call(
@@ -537,9 +451,9 @@ impl TerminalPanel {
                 let Ok(after_seq) = this.update(cx, |panel, _| {
                     panel.tab_mut(&chat, key).map(|t| t.last_seq)
                 }) else {
-                    return; // entity released
+                    return;
                 };
-                let Some(after_seq) = after_seq else { return }; // tab closed
+                let Some(after_seq) = after_seq else { return };
 
                 let subscribed = engine
                     .client()
@@ -582,7 +496,6 @@ impl TerminalPanel {
                     }
                 }
 
-                // Stream dropped without an exit — reconnect from afterSeq.
                 let done = this
                     .update(cx, |panel, _| {
                         panel.tab_mut(&chat, key).map(|t| t.exited.is_some()).unwrap_or(true)
@@ -618,7 +531,6 @@ impl TerminalPanel {
                 if !responses.is_empty()
                     && let Some(id) = tab.terminal_id.clone()
                 {
-                    // Query responses (DSR etc.) go straight back, no coalescing.
                     let engine = engine.clone();
                     let data = encode_base64(&responses);
                     cx.spawn(async move |_, _| {
@@ -648,9 +560,6 @@ impl TerminalPanel {
         }
     }
 
-    // ---- input ----
-
-    /// Queue keyboard bytes on the active tab (12 ms coalescing window).
     fn queue_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         let Some(chat) = self.selected_chat(cx) else {
             return;
@@ -665,7 +574,6 @@ impl TerminalPanel {
         if tab.exited.is_some() {
             return;
         }
-        // A keypress while scrolled back snaps to the live bottom (xterm).
         if tab.emulator.display_offset() > 0 {
             tab.emulator.scroll_to_bottom();
         }
@@ -696,7 +604,6 @@ impl TerminalPanel {
             return;
         }
         let Some(id) = tab.terminal_id.clone() else {
-            // OpenTerminal still in flight — keep the buffer, retry shortly.
             if tab.exited.is_none() {
                 tab.flush_task = Some(Self::schedule_flush(chat, key, cx));
             }
@@ -733,15 +640,11 @@ impl TerminalPanel {
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let mods = &ks.modifiers;
-        // Paste: Cmd+V (macOS) / Ctrl+Shift+V.
         if ks.key == "v" && (mods.platform || (mods.control && mods.shift)) {
             self.paste_clipboard(cx);
             cx.stop_propagation();
             return;
         }
-        // Copy: Cmd+C (macOS) / Ctrl+Shift+C. Only swallowed when it actually
-        // copied — so Ctrl+Shift+C with nothing selected still falls through
-        // to the interrupt, and plain Ctrl+C (no shift) never reaches here.
         if ks.key == "c"
             && (mods.platform || (mods.control && mods.shift))
             && self.copy_selection(cx)
@@ -759,14 +662,7 @@ impl TerminalPanel {
         }
     }
 
-    // ---- grid metrics / element hooks ----
-
-    /// Called from element prepaint with the frame's grid placement. Resizes
-    /// the emulator immediately; the `ResizeTerminal` RPC debounces 80 ms.
     pub fn on_grid_metrics(&mut self, geometry: GridGeometry, cx: &mut Context<Self>) {
-        // Stash unconditionally, before the early returns below: pointer
-        // mapping needs the placement even on frames where nothing resized,
-        // which is almost all of them.
         self.geometry = Some(geometry);
         let (cols, rows) = (geometry.cols, geometry.rows);
         let Some(chat) = self.selected_chat(cx) else {
@@ -792,8 +688,6 @@ impl TerminalPanel {
                 cx.background_executor()
                     .timer(Duration::from_millis(RESIZE_DEBOUNCE_MS))
                     .await;
-                // Re-read the *current* size — later prepaints may have
-                // resized again inside the debounce window.
                 let Ok(current) = this.update(cx, |panel, _| {
                     panel
                         .tab_mut(&chat, key)
@@ -817,11 +711,8 @@ impl TerminalPanel {
                     .await;
             }));
         }
-        // Deliberately no cx.notify(): this runs during prepaint of the
-        // current frame, which already paints the resized grid.
     }
 
-    /// Snapshot for the paint element.
     pub fn active_grid_snapshot(&self, cx: &App) -> Option<GridSnapshot> {
         let tab = self.active_tab(cx)?;
         Some(GridSnapshot {
@@ -830,9 +721,6 @@ impl TerminalPanel {
         })
     }
 
-    // ---- selection ----
-
-    /// Run `f` against the active tab's emulator.
     fn with_active_emulator<R>(
         &mut self,
         cx: &App,
@@ -844,8 +732,6 @@ impl TerminalPanel {
         tabs.tabs.get_mut(active).map(|tab| f(&mut tab.emulator))
     }
 
-    /// Window position → grid point, using this frame's placement. `None`
-    /// before the first prepaint, or when no tab is active.
     fn grid_point_at(
         &mut self,
         position: gpui::Point<Pixels>,
@@ -874,8 +760,6 @@ impl TerminalPanel {
         let Some((point, side)) = self.grid_point_at(event.position, cx) else {
             return;
         };
-        // Click count picks the granularity, the same mapping every terminal
-        // uses: drag, word, line.
         let ty = match event.click_count {
             0 => return,
             1 => SelectionType::Simple,
@@ -884,9 +768,6 @@ impl TerminalPanel {
         };
         let shift = event.modifiers.shift;
         if ty == SelectionType::Simple {
-            // Shift+click extends an existing selection instead of replacing
-            // it — the one gesture that reaches text off the bottom of a long
-            // drag without redoing the whole thing.
             let extended = shift
                 && self
                     .with_active_emulator(cx, |emu| {
@@ -905,17 +786,12 @@ impl TerminalPanel {
                 cx.notify();
                 return;
             }
-            // A plain press clears and arms; the selection itself only begins
-            // once the pointer travels far enough to mean it.
             self.with_active_emulator(cx, |emu| emu.clear_selection());
             self.selection_drag = Some(SelectionDrag {
                 origin: event.position,
                 armed: false,
             });
         } else {
-            // Word and line selections are complete on the press, so they need
-            // no threshold — but keep the drag live so the pointer can extend
-            // them at that granularity.
             self.with_active_emulator(cx, |emu| emu.start_selection(ty, point, side));
             self.selection_drag = Some(SelectionDrag {
                 origin: event.position,
@@ -943,8 +819,6 @@ impl TerminalPanel {
             if dx.hypot(dy) < SELECTION_DRAG_THRESHOLD {
                 return;
             }
-            // Threshold tripped: anchor at the *press*, not here, so the
-            // selection covers the whole gesture.
             let Some((anchor, side)) = self.grid_point_at(drag.origin, cx) else {
                 return;
             };
@@ -972,8 +846,6 @@ impl TerminalPanel {
         self.selection_drag = None;
     }
 
-    /// Copy the selection. Returns whether anything was copied, so the caller
-    /// can decide whether to swallow the keystroke.
     fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(text) = self
             .with_active_emulator(cx, |emu| emu.selection_text())
@@ -1002,8 +874,6 @@ impl TerminalPanel {
         }
     }
 
-    // ---- tab management ----
-
     fn select_tab(&mut self, chat: &str, ix: usize, cx: &mut Context<Self>) {
         if let Some(tabs) = self.chats.get_mut(chat)
             && ix < tabs.tabs.len()
@@ -1026,10 +896,6 @@ impl TerminalPanel {
         tabs.active = active_after_close(tabs.active, ix, tabs.tabs.len());
         let now_empty = tabs.tabs.is_empty();
         self.drag = None;
-        // Closing the LAST terminal closes the drawer too — an empty dock is
-        // dead space (user request). Same path as the collapse chevron.
-        // Embedded, the SHELL owns emptiness (it falls back to the surface
-        // picker) — dispatching here would toggle the bottom drawer instead.
         if now_empty && self.open && !self.embedded {
             window.dispatch_action(Box::new(ToggleTerminal), cx);
         }
@@ -1079,8 +945,6 @@ impl TerminalPanel {
         }
     }
 
-    // ---- render ----
-
     fn render_tab_bar(&mut self, chat: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::of(cx).clone();
         let tabs = self.chats.get(chat);
@@ -1099,9 +963,6 @@ impl TerminalPanel {
                     .map(|(ix, tab)| {
                         let selected = ix == active;
                         let key = tab.key;
-                        // Contextual label (user request): the OSC title —
-                        // the shell's own cwd/command name — wins over the
-                        // fixed "Terminal N" fallback.
                         let title = Self::display_title(tab);
                         let exited = tab.exited.is_some();
                         (ix, key, title, selected, exited)
@@ -1112,9 +973,6 @@ impl TerminalPanel {
 
         let bar_chat = chat_owned.clone();
         let drop_chat = chat_owned.clone();
-        // Zeron terminal-panel.tsx: `flex h-10 items-center border-b
-        // border-white/[0.07] pl-2 pr-1.5` on the #090909 panel — no separate
-        // bar fill.
         div()
             .id("terminal-tab-bar")
             .h(px(TAB_BAR_HEIGHT))
@@ -1158,8 +1016,6 @@ impl TerminalPanel {
                         let chat_close2 = chat_owned.clone();
                         let chat_drag = chat_owned.clone();
                         let ghost_title = title.clone();
-                        // Zeron tab: `h-7 rounded-lg pl-2 pr-1 gap-1.5 text-xs`,
-                        // terminal glyph + label + close; active = white/8 wash.
                         let (text_color, bg, glyph_alpha) = if selected {
                             (theme.text, crate::theme::ink(0.08), 0.8)
                         } else {
@@ -1201,7 +1057,6 @@ impl TerminalPanel {
                             .pl(px(8.0))
                             .pr(px(4.0))
                             .rounded(px(8.0))
-                            // zeron terminal-panel.tsx tab: `transition-colors`.
                             .bg(motion::hover_blend(
                                 &format!("term-tab-{key}"),
                                 bg,
@@ -1214,7 +1069,6 @@ impl TerminalPanel {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_tab(&chat_select, ix, cx);
                             }))
-                            // Middle-click closes (§1.10).
                             .on_mouse_down(
                                 MouseButton::Middle,
                                 cx.listener(move |this, _, window, cx| {
@@ -1242,8 +1096,6 @@ impl TerminalPanel {
                             .child(div().flex_1().min_w_0().truncate().child(title))
                             .child(close_btn);
 
-                        // Sliding transform while a sibling is dragged over: animate
-                        // 150 ms between committed offsets.
                         match drag {
                             Some((from, over, epoch, prev_over)) if ix != from => {
                                 let target = slide_offset(ix, from, over) * TAB_WIDTH;
@@ -1257,9 +1109,6 @@ impl TerminalPanel {
                                     ))
                                     .into_any_element()
                             }
-                            // Invisible spacer — the ghost carries the tab; a
-                            // dimmed original overlapped the sibling that
-                            // slides into the vacated slot.
                             Some((from, ..)) if ix == from => div()
                                 .w(px(TAB_WIDTH))
                                 .h(px(28.0))
@@ -1279,7 +1128,6 @@ impl TerminalPanel {
                     .justify_center()
                     .rounded(px(8.0))
                     .cursor_pointer()
-                    // zeron terminal-panel.tsx icon buttons: `transition-colors`.
                     .bg(motion::hover_blend(
                         "term-new-tab",
                         gpui::transparent_black(),
@@ -1297,7 +1145,6 @@ impl TerminalPanel {
                             .text_color(theme.text_muted.opacity(0.6)),
                     ),
             )
-            // Collapse chevron pinned right (zeron "Hide terminal" ⌘J).
             .child(div().flex_1())
             .child(
                 div()
@@ -1335,13 +1182,9 @@ enum StreamDisposition {
 impl Render for TerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        // Heal drag state if the pointer was released outside the bar.
         if self.drag.is_some() && !cx.has_active_drag() {
             self.drag = None;
         }
-        // Embedded, the RIGHT PANE's own surface shows through — a second
-        // fill here stacked another shade on the pane (user report); the
-        // drawer keeps its own tone.
         let panel_bg: Option<gpui::Hsla> = (!self.embedded).then(|| terminal_panel_bg(&theme));
         let Some(chat) = self.selected_chat(cx) else {
             return div()
@@ -1357,8 +1200,6 @@ impl Render for TerminalPanel {
         };
         let focused = self.focus_handle.is_focused(window);
 
-        // Embedded (right-pane surface host): the shell's surface tabs
-        // replace the internal bar.
         let tab_bar: Option<gpui::AnyElement> =
             (!self.embedded).then(|| self.render_tab_bar(&chat, cx).into_any_element());
         div()
@@ -1377,10 +1218,6 @@ impl Render for TerminalPanel {
                     .on_key_down(cx.listener(Self::on_key_down))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                     .on_mouse_move(cx.listener(Self::on_mouse_move))
-                    // Bound on the window, not the element: a drag that ends
-                    // outside the panel still has to end the gesture, or the
-                    // next unrelated pointer move keeps extending a selection
-                    // the user let go of.
                     .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
                     .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
@@ -1418,7 +1255,6 @@ mod tests {
         assert_eq!(clamp_terminal_height(300.0, 900.0), 300.0);
         assert_eq!(clamp_terminal_height(10.0, 900.0), 160.0);
         assert_eq!(clamp_terminal_height(4000.0, 900.0), 900.0 * 0.55);
-        // Tiny windows: min wins over the 55vh cap.
         assert_eq!(clamp_terminal_height(200.0, 100.0), 160.0);
         assert_eq!(clamp_terminal_height(f32::NAN, 900.0), 160.0);
     }
@@ -1441,7 +1277,6 @@ mod tests {
         assert_eq!(v, ["b", "c", "a", "d"]);
         reorder_tabs(&mut v, 3, 0);
         assert_eq!(v, ["d", "b", "c", "a"]);
-        // Out-of-range / no-op moves leave the vec untouched.
         reorder_tabs(&mut v, 9, 0);
         reorder_tabs(&mut v, 1, 1);
         assert_eq!(v, ["d", "b", "c", "a"]);
@@ -1459,17 +1294,14 @@ mod tests {
 
     #[test]
     fn slide_offsets_shift_toward_the_gap() {
-        // Dragging 0 over 2: tabs 1 and 2 slide left one slot.
         assert_eq!(slide_offset(0, 0, 2), 0.0);
         assert_eq!(slide_offset(1, 0, 2), -1.0);
         assert_eq!(slide_offset(2, 0, 2), -1.0);
         assert_eq!(slide_offset(3, 0, 2), 0.0);
-        // Dragging 3 over 1: tabs 1 and 2 slide right.
         assert_eq!(slide_offset(0, 3, 1), 0.0);
         assert_eq!(slide_offset(1, 3, 1), 1.0);
         assert_eq!(slide_offset(2, 3, 1), 1.0);
         assert_eq!(slide_offset(3, 3, 1), 0.0);
-        // Hovering the origin: nothing moves.
         for ix in 0..4 {
             assert_eq!(slide_offset(ix, 2, 2), 0.0);
         }
@@ -1477,22 +1309,18 @@ mod tests {
 
     #[test]
     fn active_index_tracks_reorders() {
-        // The active tab itself moves.
         assert_eq!(active_after_reorder(1, 1, 3), 3);
-        // A tab hopping over the active one from the left shifts it down.
         assert_eq!(active_after_reorder(2, 0, 3), 1);
-        // …and from the right shifts it up.
         assert_eq!(active_after_reorder(1, 3, 0), 2);
-        // Disjoint moves leave it alone.
         assert_eq!(active_after_reorder(0, 2, 3), 0);
     }
 
     #[test]
     fn active_index_tracks_closes() {
-        assert_eq!(active_after_close(2, 0, 3), 1); // close left of active
-        assert_eq!(active_after_close(1, 1, 2), 1); // close active mid-list
-        assert_eq!(active_after_close(2, 2, 2), 1); // close active at tail
-        assert_eq!(active_after_close(0, 0, 0), 0); // last tab closed
+        assert_eq!(active_after_close(2, 0, 3), 1);
+        assert_eq!(active_after_close(1, 1, 2), 1);
+        assert_eq!(active_after_close(2, 2, 2), 1);
+        assert_eq!(active_after_close(0, 0, 0), 0);
     }
 
     #[test]

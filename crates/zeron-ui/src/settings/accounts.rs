@@ -1,14 +1,3 @@
-//! Settings → Agents / accounts (feature-inventory §1.9): provider cards
-//! (Claude Code, Codex, Cursor) with account rows — email, plan badge, Active, usage
-//! meters (indigo → amber ≥80% → red ≥95%, reset time), Switch / Forget — plus
-//! the add-account dialogs (paste-code and browser-poll flows) and
-//! account-shaped loading skeletons. Zeron retargets devices from the settings
-//! sidebar (`targetDeviceId` passthrough kept plumbed, unused single-device).
-//!
-//! The accounts RPC surface is being implemented engine-side in parallel —
-//! every call here surfaces failures as inline UI states rather than assuming
-//! the methods exist.
-
 use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, Context, Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*,
@@ -27,24 +16,16 @@ use crate::popover::{self, Loadable};
 use crate::state::AppState;
 use crate::theme::Theme;
 
-// ---------------------------------------------------------------------------
-// Pure: usage meters + labels
-// ---------------------------------------------------------------------------
-
 pub const USAGE_WARN_FRACTION: f32 = 0.80;
 pub const USAGE_CRITICAL_FRACTION: f32 = 0.95;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageLevel {
-    /// < 80% — indigo.
     Normal,
-    /// ≥ 80% — amber.
     Warn,
-    /// ≥ 95% — red.
     Critical,
 }
 
-/// Threshold classification of a usage fraction. Pure.
 pub fn usage_level(fraction: f32) -> UsageLevel {
     if fraction >= USAGE_CRITICAL_FRACTION {
         UsageLevel::Critical
@@ -63,30 +44,15 @@ pub fn usage_color(level: UsageLevel, theme: &Theme) -> Hsla {
     }
 }
 
-/// Why a `ListAgentAccounts` load is happening. Pure input to
-/// [`force_usage_for`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadTrigger {
-    /// Page construction — the visit's first list.
     Mount,
-    /// "Click to retry" after a failed load — still the visit's first
-    /// successful list.
     Retry,
-    /// The explicit Refresh button.
     Refresh,
-    /// After a completed add-account login flow.
     PostLogin,
-    /// After Switch/Forget succeeds.
     PostAction,
 }
 
-/// Whether a load should ask the engine to probe usage (`forceUsage`). The
-/// engine only hits the provider when forced; non-forced lists serve the 60s
-/// usage cache or nothing (engine/src/agent_accounts.rs module docs — the
-/// design expects the UI to force "on page mount/refresh"). The visit's first
-/// list (mount, or retry after a failure) must force, or every first open
-/// renders "Usage unavailable" until a manual Refresh — the old app fetched
-/// usage on every list. Post-Switch/Forget lists ride the still-warm cache.
 pub fn force_usage_for(trigger: LoadTrigger) -> bool {
     match trigger {
         LoadTrigger::Mount | LoadTrigger::Retry | LoadTrigger::Refresh | LoadTrigger::PostLogin => {
@@ -96,9 +62,6 @@ pub fn force_usage_for(trigger: LoadTrigger) -> bool {
     }
 }
 
-/// Compact absolute reset moment (zeron settings.agents.tsx `formatReset`):
-/// a local clock time ("3:45 PM") when it lands within ~22h, else a short
-/// weekday ("Mon"); the caller prefixes "resets ". Pure given `now`.
 pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
     use chrono::Local;
     let at = resets_at?;
@@ -110,15 +73,12 @@ pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Opt
     })
 }
 
-/// The provider cards, in display order: (harness, name, CLI command — named
-/// in the empty-state copy, zeron settings.agents.tsx `PROVIDERS`).
 pub const PROVIDERS: [(HarnessId, &str, &str); 3] = [
     (HarnessId::ClaudeCode, "Claude Code", "claude"),
     (HarnessId::Codex, "Codex", "codex"),
     (HarnessId::Cursor, "Cursor", "cursor-agent"),
 ];
 
-/// Accounts of one provider, active first (stable otherwise). Pure.
 pub fn provider_accounts(
     snapshot: &AgentAccountsSnapshot,
     harness: HarnessId,
@@ -132,21 +92,16 @@ pub fn provider_accounts(
     accounts
 }
 
-// ---------------------------------------------------------------------------
-// Entity
-// ---------------------------------------------------------------------------
-
 enum LoginFlow {
-    /// StartAgentLogin in flight.
-    Starting { harness: HarnessId },
-    /// Claude-style: open the URL, paste the code back.
+    Starting {
+        harness: HarnessId,
+    },
     PasteCode {
         harness: HarnessId,
         start: AgentLoginStart,
         submitting: bool,
         error: Option<SharedString>,
     },
-    /// Codex-style: open the URL, poll until the browser flow lands.
     Browser {
         harness: HarnessId,
         start: AgentLoginStart,
@@ -156,7 +111,6 @@ enum LoginFlow {
 }
 
 impl LoginFlow {
-    /// Dialog title (zeron: "Add Claude account" / "Add Codex account").
     fn title(&self) -> &'static str {
         let harness = match self {
             LoginFlow::Starting { harness }
@@ -173,13 +127,9 @@ impl LoginFlow {
 
 pub struct AccountsPage {
     state: Entity<AppState>,
-    /// Which device's logins are shown; `None` = this device (no passthrough).
-    /// Retargeted by the page-header device switcher (zeron parity: the
-    /// accounts RPCs are relay-forwardable, CLI logins are per-device).
     target_device: Option<String>,
     device_menu: popover::Popup<()>,
     snapshot: Loadable<AgentAccountsSnapshot>,
-    /// Account id with an in-flight Switch/Forget.
     busy_account: Option<String>,
     login: Option<LoginFlow>,
     error: Option<SharedString>,
@@ -215,18 +165,10 @@ impl AccountsPage {
             _observe: observe,
             _code_events: code_events,
         };
-        // Force the usage probe on the visit's first list — a plain list
-        // returns no usage windows on a cold engine cache, which rendered
-        // every account as "Usage unavailable" until a manual Refresh. The
-        // Loading skeleton (meter ghosts) covers the probe latency, so
-        // "Usage unavailable" is reserved for a probe that genuinely failed.
         page.load(force_usage_for(LoadTrigger::Mount), cx);
         page
     }
 
-    /// Retarget the page at another device's logins: every accounts RPC is
-    /// relay-forwardable, so the whole page — list, usage probes, switch,
-    /// forget, login flows — follows the passthrough.
     fn close_device_menu(&mut self, cx: &mut Context<Self>) {
         if self.device_menu.begin_close() {
             popover::reap_popup(cx, |page: &mut Self| &mut page.device_menu);
@@ -241,16 +183,12 @@ impl AccountsPage {
             return;
         }
         self.target_device = target;
-        // A different device = a different accounts world: drop in-flight
-        // login/action state and reload with a forced usage probe (the new
-        // device's cache is cold).
         self.login = None;
         self.busy_account = None;
         self.error = None;
         self.load(force_usage_for(LoadTrigger::Mount), cx);
     }
 
-    /// Params with the `targetDeviceId` passthrough merged in.
     fn params(&self, value: serde_json::Value) -> serde_json::Value {
         let mut value = value;
         if let (Some(target), Some(object)) = (&self.target_device, value.as_object_mut()) {
@@ -259,17 +197,12 @@ impl AccountsPage {
         value
     }
 
-    /// The page-header device switcher (zeron device-switcher.tsx): a quiet
-    /// trigger — platform glyph · name · presence dot · sort glyph — opening a
-    /// dropdown of every registered device. Selecting one retargets the page.
     fn render_device_switcher(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::icons::{self, icon};
         let (mut devices, local_id) = {
             let s = self.state.read(cx);
             (s.devices.clone(), s.local_device_id.clone())
         };
-        // Stable row order (registration time, then id) — zeron's switcher
-        // sorts the same way so rows never reshuffle on heartbeats.
         devices.sort_by(|a, b| {
             a.created_at
                 .cmp(&b.created_at)
@@ -321,8 +254,6 @@ impl AccountsPage {
                     cx.listener(|this, _, _, _| this.device_menu.note_trigger_press()),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    // A press that found the menu open closes it (the card's
-                    // mouse-down-out already began the close) — never reopen.
                     if this.device_menu.take_press_was_open() {
                         this.close_device_menu(cx);
                     } else {
@@ -380,7 +311,6 @@ impl AccountsPage {
                     popover::menu_row(theme, is_active, format!("accounts-device-row-{ix}"))
                         .id(("accounts-device-row", ix))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            // Local device = no passthrough (calls stay direct).
                             let target = (!pick_local).then(|| pick_id.clone());
                             this.set_target_device(target, cx);
                         }))
@@ -449,7 +379,6 @@ impl AccountsPage {
         cx.notify();
     }
 
-    /// Switch / Forget an account.
     fn account_action(
         &mut self,
         method: &'static str,
@@ -461,7 +390,6 @@ impl AccountsPage {
         };
         self.busy_account = Some(account.id.clone());
         self.error = None;
-        // Tolerant param shape: both `id` and `accountId` plus the harness.
         let params = self.params(serde_json::json!({
             "id": account.id,
             "accountId": account.id,
@@ -481,8 +409,6 @@ impl AccountsPage {
         }));
         cx.notify();
     }
-
-    // ---- add-account flows ----
 
     fn start_login(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -585,7 +511,6 @@ impl AccountsPage {
         cx.notify();
     }
 
-    /// The browser-wait poll loop: PollAgentLogin every 1.5s until Done/Error.
     fn spawn_poll(&mut self, cx: &mut Context<Self>) {
         let Some(LoginFlow::Browser { start, .. }) = &self.login else {
             return;
@@ -606,7 +531,7 @@ impl AccountsPage {
                     .await;
                 let outcome = this.update(cx, |page, cx| {
                     let Some(LoginFlow::Browser { message, error, .. }) = &mut page.login else {
-                        return true; // dialog dismissed — stop polling
+                        return true;
                     };
                     match result.as_ref().ok().and_then(|value| {
                         serde_json::from_value::<AgentLoginPoll>(value.clone()).ok()
@@ -678,11 +603,6 @@ impl AccountsPage {
         cx.notify();
     }
 
-    // ---- render pieces ----
-
-    /// One usage window (zeron settings.agents.tsx `UsageMeter`): label ·
-    /// 5px rounded-full bar (indigo → amber ≥80% → red ≥95%) · "NN% used" ·
-    /// quiet reset time.
     fn render_usage_meter(
         &self,
         window: &zeron_proto::AgentUsageWindow,
@@ -723,8 +643,6 @@ impl AccountsPage {
                         el.child(
                             div()
                                 .h_full()
-                                // A 1.5% floor keeps tiny non-zero usage
-                                // visible (zeron `max(used, 1.5)%`).
                                 .w(gpui::relative(fraction.max(0.015)))
                                 .rounded_full()
                                 .bg(fill),
@@ -753,9 +671,6 @@ impl AccountsPage {
             .into_any_element()
     }
 
-    /// One account row (zeron settings.agents.tsx `AccountRow`): initial
-    /// avatar, email + usage meters left; badges over the Switch/Forget
-    /// actions right-anchored.
     fn render_account_row(
         &self,
         account: &AgentAccount,
@@ -794,9 +709,6 @@ impl AccountsPage {
                 el.child(widgets::badge(theme, plan))
             });
 
-        // Actions only on INACTIVE accounts (zeron `{!account.active && …}`):
-        // an icon-only Forget (trash, hover → foreground) then Switch, which
-        // reads "Switching…" while the activate round-trips.
         let actions: Option<gpui::Div> = (!account.active).then(|| {
             div()
                 .flex()
@@ -854,7 +766,6 @@ impl AccountsPage {
             .items_stretch()
             .gap(px(12.0))
             .child(
-                // Initial avatar: size-8 rounded-full border bg-white/[0.03].
                 div()
                     .flex_none()
                     .self_center()
@@ -879,8 +790,6 @@ impl AccountsPage {
                     .flex_col()
                     .child(widgets::row_title(theme, email))
                     .map(|el| {
-                        // Meters XOR the quiet fallback line — never both
-                        // (zeron: `usage ? meters : "Usage unavailable"…`).
                         if account.usage_windows.is_empty() {
                             el.child(
                                 div()
@@ -926,14 +835,12 @@ impl AccountsPage {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
-        let red_text = theme.danger_muted.opacity(0.9); // red-300
+        let red_text = theme.danger_muted.opacity(0.9);
         let login = self.login.as_ref()?;
         let title = login.title();
         let url_link =
             |id: &'static str, label: &'static str, url: &str, cx: &mut Context<Self>| {
                 let open_url = url.to_string();
-                // "Reopen the …" text link (zeron: `text-[12px]
-                // text-muted-foreground/60 hover:underline`).
                 div()
                     .id(id)
                     .mt(px(6.0))
@@ -1108,9 +1015,6 @@ impl AccountsPage {
         Some(popover::modal("add-account-dialog", viewport, card))
     }
 
-    /// A ghost account row (zeron settings.agents.tsx `SkeletonRow`): avatar,
-    /// email line, two usage-meter ghosts, a badge — same geometry as the real
-    /// row so loaded data lands without a layout jump. `dim` fades row two.
     fn render_skeleton_row(
         &self,
         _id: (&'static str, usize),
@@ -1218,8 +1122,6 @@ impl Render for AccountsPage {
                 Some(crate::icons::claude_brand()),
             ),
         };
-        // Brand mark inside a 24px centered box (zeron: `grid size-6
-        // place-items-center [&_svg]:size-4`).
         let provider_mark = |harness: HarnessId, theme: &Theme| {
             let (mark, tint) = provider_icon(harness);
             div()
@@ -1235,8 +1137,6 @@ impl Render for AccountsPage {
                 )
         };
 
-        // One section per provider (zeron settings.agents.tsx `ProviderSection`):
-        // brand header + Add account, then the account rows card.
         let sections: Vec<AnyElement> = match &self.snapshot {
             Loadable::Idle | Loadable::Loading => PROVIDERS
                 .into_iter()
@@ -1266,8 +1166,6 @@ impl Render for AccountsPage {
                                 ),
                         )
                         .child(
-                            // Ghost rows shaped like real ones (row two dimmed)
-                            // so the card keeps its size while data develops.
                             widgets::section_card(&theme)
                                 .mt(px(8.0))
                                 .child(self.render_skeleton_row(
@@ -1295,7 +1193,6 @@ impl Render for AccountsPage {
                         .id("accounts-load-error")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            // Retry IS the visit's first successful list — force usage.
                             this.load(force_usage_for(LoadTrigger::Retry), cx)
                         }))
                         .child(
@@ -1314,7 +1211,6 @@ impl Render for AccountsPage {
                     .into_iter()
                     .map(|(harness, name, cli)| {
                         let accounts = provider_accounts(&snapshot, harness);
-                        // EVERY warning renders its own strip (zeron maps them).
                         let warnings: Vec<String> = snapshot
                             .warnings
                             .iter()
@@ -1331,9 +1227,6 @@ impl Render for AccountsPage {
                         let add_id: SharedString = format!("add-account-{name}").into();
                         let card = widgets::section_card(&theme).mt(px(8.0));
                         let empty_copy = match harness {
-                            // Cursor's app login is SEPARATE from `cursor-agent
-                            // login` — pointing at the CLI would send users to a
-                            // sign-in that does not light this up.
                             HarnessId::Cursor => format!(
                                 "{name} isn't connected on this device — connect it to run \
                                  Cursor sessions."
@@ -1417,9 +1310,6 @@ impl Render for AccountsPage {
                             .child(widgets::page_header(&theme, "Accounts", account_count))
                             .child(div().flex_1())
                             .child(
-                                // `text-[12.5px]` + leading 16px Refresh icon,
-                                // dimmed while a refresh is in flight (zeron
-                                // `disabled:opacity-50`).
                                 widgets::ghost_action(&theme)
                                     .id("accounts-refresh")
                                     .flex_none()
@@ -1456,8 +1346,6 @@ impl Render for AccountsPage {
                         )
                     })
                     .children(sections)
-                    // Footer note (zeron: `mt-6 text-[12px] leading-relaxed
-                    // text-muted-foreground/60`).
                     .child(
                         div()
                             .mt(px(24.0))
@@ -1483,16 +1371,10 @@ mod tests {
 
     #[test]
     fn first_load_of_a_visit_forces_the_usage_probe() {
-        // The engine only probes usage when forced (M5c); without forcing on
-        // mount, the first Accounts open always rendered "Usage unavailable".
         assert!(force_usage_for(LoadTrigger::Mount));
-        // A retry after a failed load is still the visit's first successful
-        // list — same requirement.
         assert!(force_usage_for(LoadTrigger::Retry));
-        // Explicit refresh and a just-completed login always re-probe.
         assert!(force_usage_for(LoadTrigger::Refresh));
         assert!(force_usage_for(LoadTrigger::PostLogin));
-        // Switch/Forget re-lists ride the still-warm 60s cache.
         assert!(!force_usage_for(LoadTrigger::PostAction));
     }
 
@@ -1519,7 +1401,6 @@ mod tests {
         use chrono::Local;
         let now = Utc::now();
         assert_eq!(format_reset(None, now), None);
-        // Within ~22h: a local clock time ("resets 3:45 PM").
         let soon = now + TimeDelta::minutes(125);
         assert_eq!(
             format_reset(Some(soon), now),
@@ -1528,7 +1409,6 @@ mod tests {
                 soon.with_timezone(&Local).format("%-I:%M %p")
             ))
         );
-        // Beyond: a short weekday ("resets Mon").
         let later = now + TimeDelta::days(3);
         assert_eq!(
             format_reset(Some(later), now),

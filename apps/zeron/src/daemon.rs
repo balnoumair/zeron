@@ -1,9 +1,3 @@
-//! `zeron daemon …` — install/manage `zeron headless` as a background service:
-//! a systemd **user** unit on Linux (the VPS deployment target), a launchd
-//! LaunchAgent on macOS. The unit runs the current executable with the
-//! `ZERON_*` environment captured at install time, so
-//! the relevant `ZERON_*` environment captured at install time.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,9 +6,6 @@ use anyhow::{Context, bail};
 const LAUNCHD_LABEL: &str = "sh.zeron.app";
 const SYSTEMD_UNIT: &str = "zeron.service";
 
-/// Environment captured into the unit file. `PATH` is always included (the
-/// engine spawns harness CLIs like `claude`, which service managers' minimal
-/// default PATH won't find); the `ZERON_*`/logging vars only when set.
 const CAPTURED_ENV: &[&str] = &[
     "PATH",
     "ZERON_DATA_DIR",
@@ -31,7 +22,6 @@ pub fn install(data_dir: &Path) -> anyhow::Result<()> {
         let plist = launchd_plist_path()?;
         std::fs::create_dir_all(plist.parent().expect("LaunchAgents parent"))?;
         std::fs::create_dir_all(data_dir)?;
-        // Reinstall-friendly: unload any previous incarnation before rewriting.
         let _ = run_quiet("launchctl", &["bootout", &launchd_service_target()?]);
         std::fs::write(
             &plist,
@@ -105,8 +95,6 @@ pub fn start() -> anyhow::Result<()> {
         if !plist.exists() {
             bail!("not installed — run `zeron daemon install` first");
         }
-        // `stop` boots the job out of the domain, so start = bootstrap; already
-        // loaded is fine, then kickstart guarantees a running process either way.
         let _ = run_quiet(
             "launchctl",
             &["bootstrap", &launchd_domain()?, &plist.to_string_lossy()],
@@ -123,7 +111,6 @@ pub fn start() -> anyhow::Result<()> {
 
 pub fn stop() -> anyhow::Result<()> {
     if cfg!(target_os = "macos") {
-        // bootout (not `kill`): with KeepAlive the job would otherwise respawn.
         run("launchctl", &["bootout", &launchd_service_target()?])?;
     } else if cfg!(target_os = "linux") {
         run("systemctl", &["--user", "stop", SYSTEMD_UNIT])?;
@@ -142,7 +129,6 @@ pub fn restart() -> anyhow::Result<()> {
         )
         .is_err()
         {
-            // Not loaded (e.g. after `stop`) — fall through to a plain start.
             return start();
         }
         println!("Restarted.");
@@ -173,7 +159,6 @@ pub fn status() -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        // `launchctl print` is pages long; surface just the liveness lines.
         let text = String::from_utf8_lossy(&output.stdout);
         println!("{LAUNCHD_LABEL}: loaded");
         for line in text.lines() {
@@ -187,8 +172,6 @@ pub fn status() -> anyhow::Result<()> {
         }
         Ok(())
     } else if cfg!(target_os = "linux") {
-        // Passthrough; `status` exits nonzero for inactive units, which is not an
-        // error for us to report — the output already says it.
         let _ = Command::new("systemctl")
             .args(["--user", "--no-pager", "status", SYSTEMD_UNIT])
             .status()
@@ -198,10 +181,6 @@ pub fn status() -> anyhow::Result<()> {
         bail!("zeron daemon is only supported on macOS (launchd) and Linux (systemd)");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unit rendering (pure — unit-tested below)
-// ---------------------------------------------------------------------------
 
 fn captured_env() -> Vec<(String, String)> {
     CAPTURED_ENV
@@ -215,7 +194,6 @@ fn render_systemd_unit(exe: &Path, env: &[(String, String)]) -> String {
         "[Unit]\nDescription=Zeron headless engine\nAfter=network-online.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\n",
     );
     for (key, value) in env {
-        // systemd unquotes the value; escape the characters it treats specially.
         let value = value.replace('\\', "\\\\").replace('"', "\\\"");
         unit.push_str(&format!("Environment=\"{key}={value}\"\n"));
     }
@@ -226,10 +204,6 @@ fn render_systemd_unit(exe: &Path, env: &[(String, String)]) -> String {
     unit
 }
 
-/// The ExecStart binary path. An exe under `~/.zeron/app/` came from the
-/// curl|sh installer, whose upgrades relink `app/current` — point the unit at
-/// the symlink (as the installer's own unit does) so it never pins one version.
-/// (`current_exe` resolves symlinks, so the versioned dir is what we see here.)
 fn systemd_exec_path(exe: &Path) -> String {
     exec_path_for(exe, std::env::var_os("HOME").map(PathBuf::from).as_deref())
 }
@@ -293,10 +267,6 @@ fn xml_escape(input: &str) -> String {
         .replace('>', "&gt;")
 }
 
-// ---------------------------------------------------------------------------
-// Paths + process helpers
-// ---------------------------------------------------------------------------
-
 fn home_dir() -> anyhow::Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -329,7 +299,6 @@ fn launchd_service_target() -> anyhow::Result<String> {
     Ok(format!("{}/{LAUNCHD_LABEL}", launchd_domain()?))
 }
 
-/// Run a command echoing it first; error (with stderr) on nonzero exit.
 fn run(program: &str, args: &[&str]) -> anyhow::Result<()> {
     println!("$ {program} {}", args.join(" "));
     let output = Command::new(program)
@@ -347,7 +316,6 @@ fn run(program: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run without echoing; used where failure is an expected branch.
 fn run_quiet(program: &str, args: &[&str]) -> anyhow::Result<()> {
     let output = Command::new(program)
         .args(args)
@@ -376,7 +344,6 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/zeron headless\n"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin:/bin\"\n"));
         assert!(unit.contains("Environment=\"ZERON_IPC_PORT=27654\"\n"));
-        // Inner quotes escaped so systemd re-parses the value verbatim.
         assert!(unit.contains("Environment=\"RUST_LOG=info,zeron=\\\"debug\\\"\"\n"));
         assert!(unit.contains("StartLimitIntervalSec=60\n"));
         assert!(unit.contains("StartLimitBurst=5\n"));
@@ -389,8 +356,6 @@ mod tests {
 
     #[test]
     fn installed_exe_uses_the_current_symlink() {
-        // Installer-managed binary (current_exe resolves the `current` symlink to
-        // the versioned dir): the unit must point back at the symlink.
         assert_eq!(
             exec_path_for(
                 Path::new("/home/u/.zeron/app/0.3.0/zeron"),
@@ -398,7 +363,6 @@ mod tests {
             ),
             "%h/.zeron/app/current/zeron"
         );
-        // Source build: literal path.
         assert_eq!(
             exec_path_for(
                 Path::new("/src/target/debug/zeron"),
@@ -416,7 +380,6 @@ mod tests {
             Path::new("/Users/x/.zeron/daemon.log"),
         );
         assert!(plist.contains("<key>Label</key><string>sh.zeron.app</string>"));
-        // XML-escaped exe path and env value.
         assert!(plist.contains("<string>/Users/x/zeron &amp; co/zeron</string>"));
         assert!(plist.contains("<string>27654</string>"));
         assert!(plist.contains("<string>headless</string>"));

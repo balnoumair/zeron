@@ -1,7 +1,3 @@
-//! Settings → Devices (feature-inventory §1.5): the device registry — name,
-//! platform, last-seen, presence dot, a "This device" badge, click-to-copy id,
-//! and a Rename dialog (Mutate renameDevice).
-
 use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, div,
@@ -17,17 +13,13 @@ use crate::popover;
 use crate::state::AppState;
 use crate::theme::Theme;
 
-/// A device that pinged within this window shows a presence dot (engines
-/// heartbeat every 15s; 70s tolerates a couple of missed beats).
 pub const DEVICE_ONLINE_WINDOW_SECS: i64 = 70;
 
-/// Presence: last-seen within the online window (future timestamps count). Pure.
 pub fn device_online(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     last_seen
         .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= DEVICE_ONLINE_WINDOW_SECS)
 }
 
-/// Compact last-seen line. Pure.
 pub fn format_last_seen(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     let Some(at) = last_seen else {
         return "never seen".to_string();
@@ -44,8 +36,6 @@ pub fn format_last_seen(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
     }
 }
 
-/// Scope-aware copy: a local registry describes only the active local
-/// workspace and must not imply that account device metadata is already live.
 pub fn devices_subtitle(scope: Option<WorkspaceScope>) -> &'static str {
     match scope {
         Some(WorkspaceScope::Local) => "Manage device details stored in this local workspace.",
@@ -63,7 +53,6 @@ struct RenameDialog {
 pub struct DevicesPage {
     state: Entity<AppState>,
     rename: Option<RenameDialog>,
-    /// Device id whose id-chip shows "Copied" right now.
     copied: Option<String>,
     error: Option<SharedString>,
     task: Option<Task<()>>,
@@ -188,7 +177,6 @@ impl DevicesPage {
     }
 }
 
-/// Human platform label (zeron settings.devices.tsx `platformLabel`).
 pub fn platform_label(platform: &str) -> &str {
     match platform {
         "macos" | "darwin" => "macOS",
@@ -201,7 +189,6 @@ pub fn platform_label(platform: &str) -> &str {
     }
 }
 
-/// Short device id for the click-to-copy chip (`abcd1234…wxyz`).
 pub fn short_id(id: &str) -> String {
     if id.len() > 12 {
         format!("{}…{}", &id[..8], &id[id.len() - 4..])
@@ -225,7 +212,7 @@ impl Render for DevicesPage {
         };
         let copied = self.copied.clone();
         let dialog = self.render_rename_dialog(window.viewport_size(), cx);
-        let emerald = theme.success; // emerald-400
+        let emerald = theme.success;
         let count = devices.len();
 
         let rows: Vec<AnyElement> = devices
@@ -244,11 +231,6 @@ impl Render for DevicesPage {
                     "ios" | "android" => crate::icons::SMARTPHONE,
                     _ => crate::icons::MONITOR,
                 };
-                // Presence lives ON the identity tile: a corner dot (emerald
-                // online with a soft glow, faint offline), ringed by the card
-                // tone so it "cuts" the tile — zeron settings.devices.tsx
-                // `border-2 border-[var(--card)]` +
-                // `shadow-[0_0_6px_rgba(52,211,153,0.55)]`.
                 let tile = widgets::row_tile(&theme, platform_icon).relative().child(
                     div()
                         .absolute()
@@ -269,8 +251,6 @@ impl Render for DevicesPage {
                         })
                         .when(!online, |el| el.bg(crate::theme::ink(0.22))),
                 );
-                // One quiet meta line: platform · version · (offline: last
-                // seen) · id chip.
                 let mut meta: Vec<AnyElement> = vec![
                     div()
                         .child(SharedString::from(
@@ -295,7 +275,6 @@ impl Render for DevicesPage {
                             .into_any_element(),
                     );
                 }
-                // "Added {time ago}" — always present (zeron settings.devices.tsx).
                 if let Some(created) = device.created_at {
                     meta.push(
                         div()
@@ -354,9 +333,6 @@ impl Render for DevicesPage {
                         )
                     })
                     .child(
-                        // `opacity-70 hover:opacity-100` (zeron: also rises on
-                        // row hover — gpui has no group-hover, so the button's
-                        // own hover carries the reveal).
                         widgets::ghost_action(&theme)
                             .id(("device-rename", ix))
                             .opacity(0.7)
@@ -438,7 +414,6 @@ mod tests {
         assert!(device_online(Some(now - TimeDelta::seconds(70)), now));
         assert!(!device_online(Some(now - TimeDelta::seconds(71)), now));
         assert!(!device_online(None, now));
-        // Clock skew (future) counts as online.
         assert!(device_online(Some(now + TimeDelta::seconds(30)), now));
     }
 
