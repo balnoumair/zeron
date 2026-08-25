@@ -24,6 +24,7 @@ pub mod sound;
 pub mod state;
 pub mod terminal;
 pub mod transcript;
+pub mod view;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};

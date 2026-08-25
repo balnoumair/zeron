@@ -1190,8 +1190,8 @@ impl Shell {
                     .sessions
                     .iter()
                     .map(|s| {
-                        use zeron_proto::view::Indicator;
-                        let status = match zeron_proto::view::effective_indicator(Some(s), now) {
+                        use zeron_proto::Indicator;
+                        let status = match zeron_proto::effective_indicator(Some(s), now) {
                             Indicator::Working => zeron_proto::SessionStatus::Working,
                             Indicator::AwaitingInput => zeron_proto::SessionStatus::AwaitingInput,
                             Indicator::Errored => zeron_proto::SessionStatus::Errored,

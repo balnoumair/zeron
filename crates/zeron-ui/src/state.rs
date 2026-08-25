@@ -434,15 +434,18 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // Pure state + reducers
 // ---------------------------------------------------------------------------
 
-// The frontend-agnostic derivations (sort orders, staleness gating, sidebar
-// grouping, the boot gate, relative times) live in `zeron_proto::view`, pure
-// and with their own test suite. Re-exported here because every call site in
-// this crate reads them as `state::…`.
-pub use zeron_proto::view::{
-    ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
-    chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    parse_auth_state, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+// The viewport derivations (sort orders, sidebar grouping, the boot gate,
+// relative times) live in `crate::view`, pure and with their own test suite.
+// Re-exported here because every call site in this crate reads them as
+// `state::…`.
+pub use crate::view::{
+    ChatGroup, ConnectionStatus, GatePhase, attention_rank, chat_location, format_time_ago,
+    gate_phase, group_chats, parse_auth_state, project_label, sort_active, sort_chats, sort_spaces,
+    sort_tabs,
 };
+// Session staleness is a backend rule — the engine and the harnesses enforce
+// the same window — so it stays in proto and is re-exported, not re-stated.
+pub use zeron_proto::{Indicator, SESSION_STALE_MS, display_status, effective_indicator};
 
 // Compatibility types retained for the UI's local transition state. The local
 // engine never emits account or organization events, so these remain unset.
@@ -1548,7 +1551,7 @@ mod tests {
     use chrono::TimeDelta;
     use zeron_engine::{EngineCore, default_registry};
     // `SessionStatus` is only needed to build the fixtures below — the module
-    // itself derives everything through `zeron_proto::view`.
+    // itself derives everything through `crate::view`.
     use zeron_proto::{SessionStatus, UserProfile};
 
     /// A localhost port that was just free (bind :0, read, drop).
