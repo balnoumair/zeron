@@ -1,17 +1,3 @@
-//! Native menu bar + app-level window actions (macOS-first).
-//!
-//! zeron never called `cx.set_menus`, so on macOS `NSApp.mainMenu` stayed nil:
-//! no app menu, no ⌘Q quit, and nothing for the auto-hidden system menu bar to
-//! reveal on hover (gpui only calls `setMainMenu_` from `set_menus` —
-//! gpui_macos/src/platform.rs `fn set_menus`). Structure ported from zed's
-//! `crates/zed/src/zed/app_menus.rs` and the gpui `set_menus.rs` example at the
-//! pinned rev (f14fea9bf3c9).
-//!
-//! Wiring: [`init`] registers the global action handlers (run once at boot),
-//! [`bind_keys`] installs the fixed macOS shortcuts (re-run by
-//! `shell::apply_keymap`, which clears every binding first), and
-//! [`app_menus`] builds the menu bar handed to `cx.set_menus` in `run_app`.
-
 use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
 
 use crate::appearance::{self, AppearanceMode};
@@ -34,24 +20,14 @@ actions!(
     ]
 );
 
-/// Register the global handlers backing the menu bar and its shortcuts. Call
-/// once at boot, before `cx.set_menus`.
 pub fn init(cx: &mut App) {
     cx.on_action(quit);
-    // Application-menu verbs — gpui wraps NSApp `hide` / `hideOtherApplications`
-    // / `unhideAllApplications` (zed registers the same trio in
-    // crates/zed/src/zed.rs `init`).
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    // Window verbs route to the active window. zeron is single-window, so a
-    // global handler suffices where zed registers these per-workspace
-    // (crates/zed/src/zed.rs `register_action(Minimize/Zoom)`).
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
     cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
     cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, |window| window.remove_window()));
-    // Appearance. Each verb persists and repaints every window; see
-    // `appearance::set_mode`.
     cx.on_action(|_: &AppearanceSystem, cx| appearance::set_mode(AppearanceMode::System, cx));
     cx.on_action(|_: &AppearanceLight, cx| appearance::set_mode(AppearanceMode::Light, cx));
     cx.on_action(|_: &AppearanceDark, cx| appearance::set_mode(AppearanceMode::Dark, cx));
@@ -63,19 +39,10 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
     }
 }
 
-/// ⌘Q / "Quit Zeron". `cx.quit()` runs the platform's standard quit routine,
-/// which invokes gpui `App::shutdown` — that fires the `on_app_quit` observers
-/// registered in `run_app` (embedded-engine drain: live runs + doc snapshot
-/// flush) with gpui's shutdown timeout before the process exits. Same graceful
-/// path as quitting from the Dock or closing the last window.
 fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
 }
 
-/// Fixed app-level shortcuts backing the menu key equivalents. These live
-/// outside the customizable keymap; `shell::apply_keymap` calls this after its
-/// `clear_key_bindings` so they survive keymap re-application. macOS only —
-/// on Linux/Windows we keep ctrl-w/ctrl-q free for future in-app use.
 pub fn bind_keys(cx: &mut App) {
     if !cfg!(target_os = "macos") {
         return;
@@ -83,8 +50,6 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(macos_key_bindings());
 }
 
-/// The binding table behind [`bind_keys`] — `KeyBinding` construction is pure
-/// (no `App`), so unit tests can inspect it directly.
 fn macos_key_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-q", Quit, None),
@@ -95,15 +60,10 @@ fn macos_key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// The zeron menu bar. macOS renders this natively; mac-only entries are gated
-/// at runtime (`cfg!`) so the whole module compiles and tests on Linux.
 pub fn app_menus() -> Vec<Menu> {
     let macos = cfg!(target_os = "macos");
 
-    // macOS titles the first menu with the bundle/process name regardless of
-    // what we pass, but gpui still wants a name.
     let mut app_items = vec![
-        // Placeholder until a real about dialog exists (explicitly disabled).
         MenuItem::action("About Zeron", About).disabled(true),
         MenuItem::separator(),
     ];
@@ -121,14 +81,7 @@ pub fn app_menus() -> Vec<Menu> {
 
     let mut menus = vec![
         Menu::new("Zeron").items(app_items),
-        // Standard clipboard verbs tied to the composer's existing actions via
-        // their native selectors (`OsAction` → cut:/copy:/paste:/selectAll:),
-        // so the OS Edit menu routes through the responder chain to the focused
-        // input — zed wires its editor actions identically
-        // (crates/zed/src/zed/app_menus.rs, Edit/Selection menus).
         Menu::new("Edit").items([
-            // Undo/Redo have no `OsAction` counterpart — they dispatch as plain
-            // actions to the focused input, same as the composer keymap.
             MenuItem::action("Undo", composer::Undo),
             MenuItem::action("Redo", composer::Redo),
             MenuItem::separator(),
@@ -139,15 +92,12 @@ pub fn app_menus() -> Vec<Menu> {
             MenuItem::os_action("Select All", composer::SelectAll, OsAction::SelectAll),
         ]),
     ];
-    // Appearance lives under View on every platform — it is the only View verb
-    // today, but "Appearance" as a top-level menu would read oddly next to Edit.
     menus.push(Menu::new("View").items([
         MenuItem::action("Appearance: System", AppearanceSystem),
         MenuItem::action("Appearance: Light", AppearanceLight),
         MenuItem::action("Appearance: Dark", AppearanceDark),
     ]));
     if macos {
-        // Standard Window menu; macOS appends the open-window list itself.
         menus.push(Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),
@@ -201,8 +151,6 @@ mod tests {
             .iter()
             .find(|m| m.name.as_ref() == "Edit")
             .expect("Edit menu present");
-        // `OsAction` has no `Debug` impl at the pinned rev, so compare
-        // per-field.
         let expect = [
             (composer::Cut.name(), OsAction::Cut),
             (composer::Copy.name(), OsAction::Copy),
@@ -247,8 +195,6 @@ mod tests {
 
     #[test]
     fn macos_bindings_cover_quit_close_minimize() {
-        // `KeyBinding::new` panics on unparseable combos, so constructing the
-        // table is itself the parse check.
         let bindings = macos_key_bindings();
         let find = |name: &str| {
             bindings

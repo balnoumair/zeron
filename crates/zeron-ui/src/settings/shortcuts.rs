@@ -1,8 +1,3 @@
-//! Settings → Shortcuts (feature-inventory §1.4): a table of the rebindable
-//! bindings — click a combo to record (Esc cancels), live conflict detection,
-//! per-row Reset and Restore defaults. Changes emit [`ShortcutsEvent::Changed`];
-//! the shell persists them and re-applies the app keymap.
-
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString, Window, div,
     prelude::*, px,
@@ -12,14 +7,10 @@ use crate::settings::{KeymapConfig, ShortcutId, combo_from_keystroke, display_co
 use crate::state::AppState;
 use crate::theme::Theme;
 
-/// Outcome of one keystroke while recording. Pure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordOutcome {
-    /// Esc — abandon recording, keep the old combo.
     Cancelled,
-    /// A bare modifier (or unusable key) — stay recording.
     Ignored,
-    /// A full combo landed.
     Set(String),
 }
 
@@ -35,20 +26,14 @@ pub fn record_key(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> R
 
 #[derive(Debug, Clone)]
 pub enum ShortcutsEvent {
-    /// The keymap changed — persist + re-apply.
     Changed(KeymapConfig),
 }
 
 pub struct ShortcutsPage {
-    /// Working copy (kept in sync with the shell via `Changed` events).
     keymap: KeymapConfig,
     recording: Option<ShortcutId>,
-    /// A rejected record attempt ("{Combo} is already assigned to {label}.") —
-    /// conflicts never persist; they're refused at record time, as in zeron.
     conflict_notice: Option<SharedString>,
     focus: FocusHandle,
-    // The page never talks RPC; state is kept for parity with sibling pages
-    // (and future per-device keymaps).
     _state: Entity<AppState>,
 }
 
@@ -88,8 +73,6 @@ impl ShortcutsPage {
             }
             RecordOutcome::Ignored => {}
             RecordOutcome::Set(combo) => {
-                // A combo already bound elsewhere is REFUSED, naming the owner
-                // (zeron settings.shortcuts.tsx: "… is already assigned to …").
                 if let Some(owner) = conflict_owner(&self.keymap, recording, &combo) {
                     self.conflict_notice = Some(
                         format!(
@@ -113,15 +96,12 @@ impl ShortcutsPage {
     }
 }
 
-/// The shortcut (other than `id`) already bound to `combo`, if any. Pure.
 pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Option<ShortcutId> {
     ShortcutId::ALL
         .into_iter()
         .find(|&other| other != id && keymap.get(other) == combo)
 }
 
-/// One-line purpose copy per shortcut (zeron lib/shortcuts.ts
-/// `SHORTCUT_DEFINITIONS` descriptions, verbatim).
 fn description(id: ShortcutId) -> &'static str {
     match id {
         ShortcutId::ToggleSidebar => "Show or hide sessions and settings navigation.",
@@ -147,9 +127,6 @@ impl Render for ShortcutsPage {
             } else {
                 display_combo(&combo).into()
             };
-            // zeron settings.shortcuts.tsx row: min-h-[72px] px-5 gap-5, label
-            // + description left, Reset (only when modified), then the combo
-            // chip — recording inverts it to white-on-black.
             div()
                 .min_h(px(72.0))
                 .px(px(20.0))
@@ -218,8 +195,6 @@ impl Render for ShortcutsPage {
                                     .bg(theme.bg)
                                     .text_color(theme.text)
                                     .hover(|s| {
-                                        // `hover:border-foreground/20` — the
-                                        // neutral foreground, not pure white.
                                         s.border_color(theme.text.opacity(0.2))
                                             .bg(crate::theme::ink(0.03))
                                     })
@@ -235,8 +210,6 @@ impl Render for ShortcutsPage {
                 )
         });
 
-        // Helper line stays in the muted tone even for a rejected conflict —
-        // the message names the specific clash (zeron settings.shortcuts.tsx).
         let helper: SharedString = if recording.is_some() {
             "Press Escape to cancel.".into()
         } else if let Some(notice) = self.conflict_notice.clone() {
@@ -279,8 +252,6 @@ impl Render for ShortcutsPage {
                                     ),
                             )
                             .child({
-                                // `disabled:opacity-35` when nothing is
-                                // customized or while recording.
                                 let disabled = !customized || recording.is_some();
                                 widgets::ghost_action(&theme)
                                     .id("shortcuts-restore-defaults")
@@ -343,7 +314,6 @@ mod tests {
             record_key("k", false, true, true, true),
             RecordOutcome::Set("mod-alt-shift-k".into())
         );
-        // Bare modifiers stay recording.
         assert_eq!(
             record_key("shift", false, false, true, false),
             RecordOutcome::Ignored
@@ -356,8 +326,6 @@ mod tests {
 
     #[test]
     fn conflicting_records_are_refused() {
-        // zeron parity: a combo bound elsewhere is refused at record time (the
-        // helper names the owner) — conflicts never persist into the keymap.
         let keymap = KeymapConfig::default();
         let RecordOutcome::Set(combo) = record_key("b", true, false, false, false) else {
             panic!("expected Set");
@@ -366,12 +334,10 @@ mod tests {
             conflict_owner(&keymap, ShortcutId::ToggleSidebar, &combo),
             Some(ShortcutId::ToggleChanges)
         );
-        // Re-recording a shortcut's own combo is not a conflict.
         assert_eq!(
             conflict_owner(&keymap, ShortcutId::ToggleChanges, &combo),
             None
         );
-        // A free combo conflicts with nothing.
         assert_eq!(
             conflict_owner(&keymap, ShortcutId::ToggleSidebar, "mod-shift-x"),
             None

@@ -1,16 +1,3 @@
-//! The app shell (zeron `__root.tsx`): sidebar column + main panel + optional
-//! right "Changes" pane and the connection gate.
-//!
-//! Layout is zeron's: collapsible drag-resizable sidebar (208–400px, default
-//! 256) with a 200ms ease-out width transition; main panel with an h-11 header,
-//! content outlet, and a reserved h-6 status strip so later content never
-//! shifts; right pane scaffold (360–760px, default 520), hidden by default.
-//! Widths/collapsed state persist to `ui-settings.json` (debounced).
-//!
-//! Resize handles use gpui's drag-and-drop pattern (an `on_drag` with an empty
-//! ghost view + `on_drag_move::<Marker>` on the root), the same idiom as Zed's
-//! dock. Double-clicking a handle resets that pane to its default width.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -62,21 +49,10 @@ actions!(
     [ToggleSidebar, ToggleChanges, AddSpacePalette, NewSession]
 );
 
-// ---------------------------------------------------------------------------
-// Traffic-light-aware titlebar layout (feature-inventory §1.1)
-// ---------------------------------------------------------------------------
-
-/// Where the top-left window-control cluster starts, in px from the window's
-/// left edge (zeron window-controls.tsx: `left: fullscreen ? 12 : 88`). The
-/// frameless hiddenInset chrome puts the macOS traffic lights at {14,15};
-/// fullscreen hides them and the cluster reclaims the inset.
 pub fn titlebar_cluster_start(fullscreen: bool) -> f32 {
     if fullscreen { 12.0 } else { 88.0 }
 }
 
-/// Width of the spacer ahead of the control cluster for a strip that already
-/// carries `container_pad` px of its own left padding. macOS only — on
-/// Linux/Windows there are no traffic lights and the cluster hugs the edge.
 pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f32) -> f32 {
     if !is_macos {
         return 0.0;
@@ -84,12 +60,8 @@ pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f3
     (titlebar_cluster_start(fullscreen) - container_pad).max(0.0)
 }
 
-/// Width of the persistent top-left button cluster itself (sidebar toggle +
-/// back/forward: three 24px buttons, 2px gaps).
 pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + 2.0 * 2.0;
 
-/// Width of a row of `count` Linux caption buttons, drawn at the cluster's
-/// own 24px-button / 2px-gap rhythm.
 pub fn caption_buttons_width(count: usize) -> f32 {
     if count == 0 {
         return 0.0;
@@ -97,10 +69,6 @@ pub fn caption_buttons_width(count: usize) -> f32 {
     count as f32 * 24.0 + (count as f32 - 1.0) * 2.0
 }
 
-/// Where the cluster's first button starts, from the window's left edge.
-/// `linux_left_captions` is the number of caption buttons zeron draws at the
-/// top-left on Linux (GNOME `close:…` layouts) — the app cluster follows them
-/// at the shared 2px rhythm.
 pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captions: usize) -> f32 {
     if is_macos {
         titlebar_cluster_start(fullscreen)
@@ -111,8 +79,6 @@ pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captio
     }
 }
 
-/// Left clearance a full-bleed header (collapsed sidebar) needs so its content
-/// starts past the overlay cluster, given the header's own `container_pad`.
 pub fn cluster_clearance(
     is_macos: bool,
     fullscreen: bool,
@@ -124,9 +90,6 @@ pub fn cluster_clearance(
         .max(0.0)
 }
 
-/// (Re-)apply the whole app keymap: clears every binding, restores the composer
-/// map, then binds the customizable shortcuts from `keymap` (feature-inventory
-/// §1.4). Invalid persisted combos fall back to that shortcut's default.
 pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     fn valid_or_default(combo: &str, fallback: &str) -> String {
         let candidate = platform_combo(combo);
@@ -139,9 +102,6 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     }
     cx.clear_key_bindings();
     crate::composer::init(cx);
-    // Fixed app-level shortcuts (⌘Q quit, ⌘W close, ⌘M minimize, ⌘H hide) —
-    // these back the native menu key equivalents and must survive keymap
-    // re-application.
     crate::app_menus::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
@@ -164,19 +124,14 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
             NewSession,
             None,
         ),
-        // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
-        // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
     ]);
 }
 
-/// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Devices,
-    /// Which harnesses the composer offers (enable/disable toggles).
     Harnesses,
-    /// Per-provider CLI accounts (login, usage) — labeled "Accounts".
     Agents,
     Appearance,
     Notifications,
@@ -195,8 +150,6 @@ impl SettingsSection {
         SettingsSection::Archived,
     ];
 
-    /// Sidebar + header label (zeron settings-sidebar.tsx SECTIONS / __root.tsx
-    /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
             SettingsSection::Devices => "Devices",
@@ -210,48 +163,28 @@ impl SettingsSection {
     }
 }
 
-/// What the main outlet shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Chat,
     Settings(SettingsSection),
 }
 
-/// One right-pane surface tab (t3code RightPanelSurface, narrowed to our two
-/// kinds): a git-diff page (each tab its own [`Changes`] viewer — multiple
-/// diff panels, user request) or one embedded terminal keyed by its
-/// [`TerminalPanel`] tab key. `Picker` is the empty state ("Open a surface").
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum RightSurface {
     #[default]
     Picker,
     Diff(u64),
     Terminal(u64),
-    /// A subagent's transcript, read-only (per-subagent viz) — the handle
-    /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
 }
 
-/// Per-chat panel open flags (zeron parity: `sessionPanels` — the terminal and
-/// changes panels open *per session*, in memory only; heights and every other
-/// persisted setting stay global).
-///
-/// Everything defaults CLOSED — the right pane included (user request,
-/// revising the earlier default-open: it popped open on every session you
-/// visited). Opening is an explicit act, remembered per chat for the rest of
-/// the app run; a fresh open with no surface tabs lands on the picker.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ChatPanels {
     pub terminal_open: bool,
-    /// Right pane visible (the surface host — historically the Changes pane).
     pub changes_open: bool,
-    /// Which surface tab renders; validated against the live tab list each
-    /// frame (a closed tab falls back gracefully).
     pub right_active: RightSurface,
 }
 
-/// The session-scoped panel map. Keys are chat ids; the new-chat canvas uses
-/// the empty key. Not persisted — a fresh app starts with everything closed.
 #[derive(Debug, Default)]
 pub struct SessionPanels {
     map: std::collections::HashMap<String, ChatPanels>,
@@ -262,39 +195,29 @@ impl SessionPanels {
         self.map.get(key).copied().unwrap_or_default()
     }
 
-    /// Flip the terminal flag for `key`; returns the new value.
     pub fn toggle_terminal(&mut self, key: &str) -> bool {
         let entry = self.map.entry(key.to_string()).or_default();
         entry.terminal_open = !entry.terminal_open;
         entry.terminal_open
     }
 
-    /// Flip the changes flag for `key`; returns the new value.
     pub fn toggle_changes(&mut self, key: &str) -> bool {
         let entry = self.map.entry(key.to_string()).or_default();
         entry.changes_open = !entry.changes_open;
         entry.changes_open
     }
 
-    /// Mutate `key`'s flags in place (right-pane surface bookkeeping).
     pub fn update(&mut self, key: &str, f: impl FnOnce(&mut ChatPanels)) {
         f(self.map.entry(key.to_string()).or_default());
     }
 }
 
-/// One route-history entry (zeron parity: the renderer's TanStack memory
-/// history — every route the user visited, browser-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavEntry {
-    /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
     Settings(SettingsSection),
 }
 
-/// Browser-style navigation history for the titlebar back/forward buttons
-/// (zeron window-controls.tsx semantics): every route change pushes an entry;
-/// Back/Forward walk the stack without changing it; pushing while behind the
-/// tip truncates the entries ahead (a new branch, exactly like a browser).
 #[derive(Debug)]
 pub struct NavHistory {
     entries: Vec<NavEntry>,
@@ -313,9 +236,6 @@ impl NavHistory {
         &self.entries[self.index]
     }
 
-    /// Record a route change. Re-navigating to the current route is a no-op
-    /// (selecting the already-selected chat never happened as a navigation);
-    /// otherwise any forward branch is truncated and the entry appended.
     pub fn push(&mut self, entry: NavEntry) {
         if *self.current() == entry {
             return;
@@ -325,9 +245,6 @@ impl NavHistory {
         self.index += 1;
     }
 
-    /// Swap the current entry in place without growing the stack — the native
-    /// equivalent of a `replace: true` navigation (zeron's boot redirect from
-    /// `/` into the last-used chat leaves no dead Back target behind).
     pub fn replace(&mut self, entry: NavEntry) {
         self.entries[self.index] = entry;
     }
@@ -336,8 +253,6 @@ impl NavHistory {
         self.index > 0
     }
 
-    /// Memory history keeps every entry, so "behind the last entry" is exactly
-    /// "can go forward" (zeron window-controls.tsx).
     pub fn can_forward(&self) -> bool {
         self.index + 1 < self.entries.len()
     }
@@ -363,15 +278,8 @@ impl NavHistory {
     }
 }
 
-/// Sidebar resort glide (feature-inventory §1.6): 260ms
-/// `cubic-bezier(0.22,1,0.36,1)` per-row translate, the View Transitions
-/// equivalent.
 pub const RESORT: MotionSpec = MotionSpec::new(260, motion::EASE_RESORT);
 
-/// FLIP diff for a keyed list: given the previously rendered order and the new
-/// order (key + row height), return each surviving key's paint-only start
-/// offset `old_y - new_y` (only keys whose position actually moved). `gap` is
-/// the flex gap between rows. Pure — drives the sidebar resort glide.
 pub fn resort_offsets(
     old: &[(String, f32)],
     new: &[(String, f32)],
@@ -397,41 +305,22 @@ pub fn resort_offsets(
     offsets
 }
 
-/// Session card height (FLIP estimate): the 17px title line + 6px gap + the
-/// 14px meta line (branch left, harness mark right), inside 10px of vertical
-/// padding. The project no longer costs the card a line — it titles the group
-/// instead — so the space bought back goes to the card's own breathing room.
 const CHAT_ROW_HEIGHT: f32 = 57.0;
 
-/// Project-title height (FLIP estimate): the 14px label plus the air that
-/// separates one project's cluster from the last card of the previous one.
-/// The gap lives INSIDE the header so the resort math, which sums these
-/// heights, does not have to special-case group boundaries.
 const SPACE_HEADER_HEIGHT: f32 = 34.0;
-/// Flex gap between sidebar list items. Wide enough that consecutive cards
-/// read as separate projects on a fill-less glass column — the rows carry no
-/// border of their own, so this gap is the separation.
 const SIDEBAR_LIST_GAP: f32 = 6.0;
 
-/// Ramp height of the sidebar's scroll-edge fade (the gpui
-/// [`gpui::EdgeFade`] scope — per-primitive, so text fades per glyph).
 const SIDEBAR_GLASS_FADE_BAND: f32 = 32.0;
 
-/// Drag marker for the sidebar resize handle.
 struct SidebarResize;
-/// Drag marker for the right-pane resize handle.
 struct RightPaneResize;
 
-/// The dragged surface-tab payload (strip reorder).
 struct RightTabDrag {
     panel_key: String,
     from: usize,
     title: SharedString,
 }
 
-/// Live drag-over state for the surface-tab strip — the terminal drawer's
-/// [`crate::terminal::panel`] DragState, ported: `epoch` keys the 150ms
-/// slide-animation restarts as the hovered slot changes.
 struct RightTabDragState {
     from: usize,
     over: usize,
@@ -439,7 +328,6 @@ struct RightTabDragState {
     prev_over: usize,
 }
 
-/// Ghost chip following the pointer while a surface tab drags.
 struct SurfaceTabGhost {
     title: SharedString,
 }
@@ -463,10 +351,8 @@ impl Render for SurfaceTabGhost {
             .child(div().truncate().child(self.title.clone()))
     }
 }
-/// Drag marker for the terminal-panel height handle.
 struct TerminalResize;
 
-/// Invisible drag ghost — resize drags render nothing at the cursor.
 struct DragGhost;
 
 impl Render for DragGhost {
@@ -475,13 +361,6 @@ impl Render for DragGhost {
     }
 }
 
-/// A oneshot width tween (200ms ease-out), driven MANUALLY from render via
-/// [`Shell::eval_tween`] — never through a `with_animation` wrapper. gpui keys
-/// an animation element's start time by its full global element-id path, so a
-/// wrapper that mounts/remounts (route swap, or an ancestor animation keyed by
-/// a fresh epoch) silently REPLAYS the tween from t=0. Manual evaluation keeps
-/// the element tree's shape constant: a finished or stale tween is exactly the
-/// steady state, no matter how the tree around it remounts (round-6 §1–3).
 #[derive(Debug, Clone, Copy)]
 struct WidthTween {
     from: f32,
@@ -499,65 +378,30 @@ impl WidthTween {
     }
 }
 
-/// The chat-row Rename dialog.
 struct RenameChatDialog {
     chat_id: String,
     input: Entity<ComposerInput>,
-    /// Focus the input on the dialog's first paint (opened without window access).
     focus_pending: bool,
     _events: Subscription,
 }
 
-/// Account lifecycle owned by this process. Sign-in on a local workspace
-/// flows through the in-place switch wizard (offer → switch → import → done);
-/// `RestartPending` survives only as the fallback when the in-place swap
-/// fails and a full quit is the safe way out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyncFlow {
     Idle,
     Enabling,
     Canceling,
-    /// Signed in on a local runtime: the wizard's choice step (bring local
-    /// work / start fresh / later). `notice_open: false` = postponed, badge
-    /// in the account menu.
-    SwitchOffer {
-        notice_open: bool,
-    },
-    /// Stopping the local runtime and bootstrapping the synced one in-place.
-    Switching {
-        import: bool,
-    },
-    /// The one-time import stream is running on the new synced runtime.
-    Importing {
-        done: usize,
-        total: usize,
-    },
-    /// Import finished; the success step stays until dismissed.
-    ImportDone {
-        imported: usize,
-        skipped: usize,
-    },
-    /// The import stream reported errors or died early. Explicit retry step —
-    /// structural idempotence makes re-running safe (only missing rows copy).
-    /// Details ride `runtime_change_error`. `notice_open: false` = postponed:
-    /// the dialog is hidden but the failure stays pending, reachable through
-    /// the account menu — dismissal must never discard the only retry
-    /// entry point (under Synced scope the menu otherwise offers just
-    /// Sign out, and the local rows would be unreachable).
-    ImportFailed {
-        notice_open: bool,
-    },
-    RestartPending {
-        notice_open: bool,
-    },
+    SwitchOffer { notice_open: bool },
+    Switching { import: bool },
+    Importing { done: usize, total: usize },
+    ImportDone { imported: usize, skipped: usize },
+    ImportFailed { notice_open: bool },
+    RestartPending { notice_open: bool },
     SignOutConfirm,
     SigningOut,
     SignedOutRestartRequired,
 }
 
 impl SyncFlow {
-    /// States the in-place switch driver owns end-to-end — auth/scope edges
-    /// must not reset them while the runtime is being replaced under the UI.
     fn is_switch_lifecycle(self) -> bool {
         matches!(
             self,
@@ -573,7 +417,6 @@ impl SyncFlow {
 enum AccountMenuAction {
     EnableSync,
     SyncInProgress,
-    /// Postponed switch wizard (or legacy restart fallback) — reopen it.
     RestartPending,
     SignOut,
 }
@@ -581,8 +424,6 @@ enum AccountMenuAction {
 const RUNTIME_CHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_CHANGE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Wait until a stopped daemon can no longer win the next bootstrap probe and
-/// has released the data directory for the replacement runtime.
 async fn wait_for_remote_engine_shutdown(
     ipc_port: u16,
     data_dir: &std::path::Path,
@@ -611,8 +452,6 @@ async fn wait_for_remote_engine_shutdown(
     }
 }
 
-/// Stop the engine that owns the synced profile and wait until a local runtime
-/// can safely acquire both its IPC port and data-directory lock.
 async fn stop_synced_runtime(
     engine: crate::state::EngineHandle,
     ipc_port: u16,
@@ -638,9 +477,6 @@ async fn stop_synced_runtime(
     }
 }
 
-/// What an import-summary stream item means for the wizard: `Ok((imported,
-/// skipped))` only when the engine reported zero errors; otherwise the
-/// user-facing failure message. Pure so the partial-failure path is testable.
 fn import_summary_outcome(item: &serde_json::Value) -> Result<(usize, usize), String> {
     let count = |key: &str| item.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let errors: Vec<&str> = item
@@ -663,9 +499,6 @@ fn import_summary_outcome(item: &serde_json::Value) -> Result<(usize, usize), St
     })
 }
 
-/// The offer step's description of what a switch would bring along, or `None`
-/// when the local profile holds nothing importable. Spaces count as work:
-/// a projects-only profile must get the import choice too.
 fn local_work_phrase(chats: usize, spaces: usize) -> Option<String> {
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     match (chats, spaces) {
@@ -682,9 +515,6 @@ fn local_work_phrase(chats: usize, spaces: usize) -> Option<String> {
 
 fn account_menu_action(scope: Option<WorkspaceScope>, flow: SyncFlow) -> Option<AccountMenuAction> {
     match scope {
-        // There is no account or sync action in the local-only fork. Keep the
-        // helper returning `None` for every scope so a stale viewport cannot
-        // reopen the removed cloud lifecycle UI.
         Some(WorkspaceScope::Local) | None => None,
         _ => None,
     }
@@ -697,11 +527,7 @@ fn sync_flow_after_auth(
 ) -> SyncFlow {
     match scope {
         Some(WorkspaceScope::Local) => match (flow, auth) {
-            // The in-place switch owns its own lifecycle once started.
             (flow, _) if flow.is_switch_lifecycle() => flow,
-            // AuthStatus belongs to the runtime, not to the Shell that opened
-            // the browser. Every attached viewport must advertise the pending
-            // profile switch once any of them completes sign-in.
             (SyncFlow::SwitchOffer { .. }, Some(AuthState::SignedOut)) => SyncFlow::Idle,
             (SyncFlow::RestartPending { .. }, Some(AuthState::SignedOut)) => SyncFlow::Idle,
             (SyncFlow::Canceling, Some(AuthState::SignedIn { .. })) => flow,
@@ -711,10 +537,6 @@ fn sync_flow_after_auth(
             _ => flow,
         },
         Some(WorkspaceScope::Synced) => match auth {
-            // AuthStatus is shared by every viewport attached to the runtime.
-            // Once a synced store loses its credentials, every Shell must stop:
-            // letting another viewport sign in would authenticate a new account
-            // while the engine still serves the previous account's fixed store.
             Some(AuthState::SignedOut) => SyncFlow::SignedOutRestartRequired,
             _ => match flow {
                 SyncFlow::SignOutConfirm
@@ -729,7 +551,6 @@ fn sync_flow_after_auth(
     }
 }
 
-/// The "Create your workspace" gate (feature-inventory §1.2 OrgGate).
 struct OrgGateUi {
     name_input: Entity<ComposerInput>,
     orgs: Loadable<Vec<OrgRow>>,
@@ -739,15 +560,11 @@ struct OrgGateUi {
     _events: Subscription,
 }
 
-/// One right-pane subagent tab: the doc it shows, its strip title, and the
-/// read-only transcript entity whose drop tears the view down.
 struct SubagentTab {
     doc_id: String,
     title: SharedString,
     transcript: Entity<Transcript>,
-    /// Keeps a frozen-blob fetch alive (it falls back to a live doc watch).
     _fetch: Option<Task<()>>,
-    /// Spawn chips INSIDE the subagent transcript open their own tabs.
     _events: Subscription,
 }
 
@@ -755,56 +572,23 @@ pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
-    /// External file drag hovering the conversation column — shows the
-    /// "Drop images to attach" veil over the whole chat area; a drop stages
-    /// the files in the composer.
     file_drag_active: bool,
-    /// Measured height of the bottom chrome stack (status strip + composer +
-    /// terminal dock) the full-height transcript scrolls under — written by a
-    /// paint-time canvas each frame, read the NEXT frame for the fade inset,
-    /// the transcript's bottom clearance, and the jump pill's anchor (the
-    /// same one-frame lag every fade here rides).
     bottom_stack: std::rc::Rc<std::cell::Cell<f32>>,
-    /// Whether the Projects shelf header is under the pointer. Its actions
-    /// stay quiet until the shelf is being used, like the reference sidebar.
     pub(super) projects_header_hovered: bool,
-    /// Projects whose session cluster is folded away, by space id (`~` for
-    /// the project-less group). Session-transient, and
-    /// a COLLAPSED set rather than an expanded one so a newly appearing
-    /// project is open by default.
     pub(super) collapsed_spaces: std::collections::HashSet<String>,
-    /// The project header currently under the pointer; drives the scoped `+`
-    /// action without adding permanent noise to every project row.
     pub(super) project_header_hover: Option<String>,
-    /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
-    /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
-    /// entity from the bottom drawer's (own PTYs, own grid geometry; one
-    /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
-    /// The surface-tab strip's `+` menu (Terminal / Git diff rows).
     right_plus: popover::Popup<()>,
-    /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
-    /// scope/base pick and diff watch (multiple diff panels, user request).
     diffs: std::collections::HashMap<u64, Entity<Changes>>,
-    /// Event hookups for [`Self::diffs`] (History rows opening commit tabs).
     diff_subs: std::collections::HashMap<u64, Subscription>,
     diff_seq: u64,
-    /// Subagent transcript surfaces by id — each tab a read-only
-    /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
-    /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
-    /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
-    /// In-flight surface-tab drag (slide animation state).
     right_tab_drag: Option<RightTabDragState>,
-    /// Surface-tab strip scroll (the strip overflows horizontally, t3
-    /// ScrollArea-style; drag drop-math reads the offset back out).
     right_tab_scroll: gpui::ScrollHandle,
-    /// Chat outlet vs settings pages.
     route: Route,
-    /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
@@ -815,34 +599,19 @@ pub struct Shell {
     harnesses_page: Option<Entity<HarnessesPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
-    /// Session-row context menu: (chat id, window position).
     chat_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_dialog: Option<RenameChatDialog>,
-    /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
-    /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
-    /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
-    /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
-    /// while open.
     add_space: Option<AddSpaceFlow>,
-    /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
-    /// Chat id whose STATUS CORNER is under the pointer — just that corner
-    /// swaps to the archive button (t3code's settle-on-hover); hovering the
-    /// row body leaves the status readable.
     chat_status_hover: Option<String>,
-    /// Scroll position of the sidebar lists region (drives its edge fades).
     sidebar_scroll: gpui::ScrollHandle,
-    /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
-    /// Last seen session status per chat — the chime trigger compares against
-    /// it (a row's FIRST appearance never chimes, so boot stays silent).
     sound_prev: std::collections::HashMap<String, zeron_proto::SessionStatus>,
     user_menu: popover::Popup<()>,
-    /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
     org: Option<OrgGateUi>,
     sync_flow: SyncFlow,
@@ -850,84 +619,39 @@ pub struct Shell {
     auth_task: Option<Task<()>>,
     runtime_change_task: Option<Task<()>>,
     runtime_change_error: Option<SharedString>,
-    /// The one-time local→synced import stream (switch wizard progress step).
     import_task: Option<Task<()>>,
-    /// Title of the chat the import stream is copying right now.
     import_current: Option<SharedString>,
-    /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
     data_dir: PathBuf,
     settings: UiSettings,
-    /// Session-scoped panel open flags (terminal / changes per chat; §1.10-1.11
-    /// parity — heights stay in [`UiSettings`]).
     panels: SessionPanels,
-    /// The panel key of the chat currently shown ("" = new-chat canvas).
     active_chat: String,
-    /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
-    /// for the §1.6 resort glide.
     sidebar_prev_order: Vec<(String, f32)>,
-    /// Per-key paint offsets of the resort in flight, keyed elements restart on
-    /// `resort_epoch` bumps.
     sidebar_resort: std::collections::HashMap<String, f32>,
-    /// Keys that just appeared in a live list (fade in, no glide).
     sidebar_new_keys: std::collections::HashSet<String>,
     resort_epoch: usize,
-    /// Last observed `window.is_window_active()` — rising edge fires a
-    /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
-    /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`) — see
-    /// [`Shell::new`].
     debug_dialog: Option<String>,
     debug_gate: Option<GatePhase>,
     sidebar_tween: Option<WidthTween>,
     right_tween: Option<WidthTween>,
-    /// Changes-panel takeover (the header's expand button): the panel fills
-    /// everything right of the sidebar and the conversation column collapses
-    /// to zero. Session-local view state — never persisted, reset on close.
     right_pane_expanded: bool,
-    /// Viewport width stamped each frame at render — the expanded panel's
-    /// width target ([`Self::right_target`] has no `Window`).
     viewport_width: f32,
     terminal_tween: Option<WidthTween>,
-    /// Last observed `window.is_fullscreen()` (`None` before first paint) —
-    /// flips key the traffic-light inset tween.
     fullscreen: Option<bool>,
-    /// 200ms ease-out tween of the cluster start on fullscreen toggles.
     titlebar_tween: Option<WidthTween>,
-    /// Armed by mouse-down on a titlebar strip; the next mouse-move hands the
-    /// drag to the compositor (zed's platform-titlebar pattern).
     titlebar_should_move: bool,
-    /// The caption buttons zeron itself draws on Linux under client-side
-    /// decorations, per side, already filtered to what the compositor
-    /// supports — `None` off Linux or under server decorations (where the WM
-    /// draws real buttons). Re-resolved every frame at the top of `render`.
     linux_captions: Option<gpui::WindowButtonLayout>,
-    /// Re-renders when the desktop's button layout changes (GNOME
-    /// `button-layout` gsetting). Registered on first paint — [`Shell::new`]
-    /// has no window.
     button_layout_sub: Option<Subscription>,
-    /// Clears the height tween once it completes (so a closed panel unmounts).
     terminal_tween_task: Option<Task<()>>,
-    /// Height-drag anchor: (pointer y, height) at mouse-down on the handle.
     terminal_drag_anchor: Option<(f32, f32)>,
-    /// `motion::reduced_motion` snapshot, refreshed at the top of each render
-    /// pass so [`Shell::eval_tween`] (called from `&self` render helpers) can
-    /// snap without a `cx`.
     reduced_motion: bool,
-    /// Set by [`Shell::eval_tween`] when any tween is mid-flight this frame;
-    /// render schedules the next animation frame off it.
     motion_active: std::cell::Cell<bool>,
     save_task: Option<Task<()>>,
-    /// Focus fallback (registered on first paint — [`Shell::new`] has no
-    /// window): keyboard shortcuts dispatch through the window focus chain, so
-    /// with nothing focused they go dead. Initial focus lands on the composer
-    /// and focus lost with no successor routes back there.
     focus_sub: Option<Subscription>,
-    /// 1s heartbeat re-rendering the working indicator (elapsed + flavour word).
     _ticker: Task<()>,
     _state_observation: Subscription,
     _composer_events: Subscription,
-    /// The primary transcript's spawn-chip events (subagent tabs).
     _transcript_events: Subscription,
 }
 
@@ -939,8 +663,6 @@ impl Shell {
         });
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
-        // Every send glides the prompt to the viewport top and reserves the
-        // reply's space below it (notes-app parity).
         let composer_events = cx.subscribe(&composer, {
             let transcript = transcript.clone();
             move |_this: &mut Shell, _, event: &ComposerEvent, cx| match event {
@@ -954,10 +676,7 @@ impl Shell {
                 }
             }
         });
-        // Spawn chips open their subagent's transcript as a right-pane tab.
         let transcript_events = cx.subscribe(&transcript, Self::on_transcript_event);
-        // Working-indicator heartbeat: notify once a second while a session is
-        // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -979,11 +698,7 @@ impl Shell {
         });
         let data_dir = boot.data_dir.clone();
         let settings = UiSettings::load(&data_dir);
-        // Bind the customizable shortcuts from the persisted keymap.
         apply_keymap(cx, &settings.keymap);
-        // Dev/testing knob: `ZERON_OPEN_ROUTE=settings[/<section>]` boots
-        // straight into a settings section — these pages have no deep link and
-        // synthetic input can't reach them on headless compositors.
         let route = match std::env::var("ZERON_OPEN_ROUTE").ok().as_deref() {
             Some("settings") | Some("settings/devices") => {
                 Route::Settings(SettingsSection::Devices)
@@ -994,18 +709,12 @@ impl Shell {
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
                 Route::Chat
             }
             _ => Route::Chat,
         };
-        // More capture knobs of the same kind: `ZERON_OPEN_DIALOG=rename|delete`
-        // opens that dialog for the first chat once chats land; `=model` pops
-        // the combined harness/model menu once the shell is Ready;
-        // `ZERON_FORCE_GATE=signin|org|failed` renders that gate regardless of
-        // real auth state (display-only — for styling passes).
         let debug_dialog = std::env::var("ZERON_OPEN_DIALOG").ok();
         let debug_gate = match std::env::var("ZERON_FORCE_GATE").ok().as_deref() {
             Some("signin") => Some(GatePhase::SignIn),
@@ -1024,8 +733,6 @@ impl Shell {
             transcript,
             composer,
             file_drag_active: false,
-            // Seed with the compact composer stack's rough height so the
-            // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
             projects_header_hovered: false,
             collapsed_spaces: std::collections::HashSet::new(),
@@ -1123,26 +830,19 @@ impl Shell {
                 self.org = None;
             }
         }
-        // The in-place local→synced switch: once the replacement runtime is
-        // attached and Ready, kick the import (or finish) from here.
         self.drive_sync_switch(cx);
         let signed_out_synced = {
             let state = state.read(cx);
             state.workspace_scope == Some(WorkspaceScope::Synced)
                 && matches!(state.auth, Some(AuthState::SignedOut))
         };
-        // AuthStatus is shared by every viewport. Whichever viewport owns the
-        // embedded runtime drains it; remote viewports request daemon shutdown
-        // and all of them independently reattach to the new local runtime.
         if signed_out_synced && self.runtime_change_task.is_none() {
             self.start_local_runtime_transition(false, cx);
         }
-        // Capture knob: the add-space palette needs only the device registry.
         if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).devices.is_empty() {
             self.debug_dialog = None;
             self.open_add_space(cx);
         }
-        // Capture knob: pop the requested dialog once chats have landed.
         if let Some(which) = self.debug_dialog.clone()
             && let Some(first) = state.read(cx).chats.first().map(|c| c.id.clone())
         {
@@ -1155,32 +855,6 @@ impl Shell {
                 _ => {}
             }
         }
-        // Session chimes (herdr semantics, `sound::sound_for_transition`): a
-        // question rings whenever a session flips to AwaitingInput, a
-        // completion rings on the Working→Idle edge — for ANY session on any
-        // device. A row's first appearance only seeds the baseline, so boot
-        // (restored rows) and fresh sends stay silent. Desktop banners
-        // (`notify::post`) ride the SAME edges and gates behind their own
-        // settings flag — one detector, two outputs, so the banner can never
-        // fire where the chime wouldn't.
-        //
-        // STALENESS-GATED like the dot (`effective_indicator`), for the same
-        // reason: raw row statuses include the past. A dead turn's Working row
-        // (host killed mid-run, Idle write lost to a wedged room) seeded
-        // prev=Working here, and the moment the old Idle finally synced in —
-        // typically piggybacked on the round-trip of a fresh send — the chime
-        // heard a phantom Working→Idle and rang "done" on send (user report
-        // 2026-07-31). The dot never showed that ghost; the chime must judge
-        // by the identical clock.
-        //
-        // SEND-PENDING-GATED too (`AppState::send_pending`): a send whose
-        // queued command the host hasn't executed yet can still surface a
-        // phantom Working→Idle (a stale Working row crossing the 45s gate on
-        // the send's own re-render, or a late old Idle row) — the done-chime
-        // stays quiet for that chat until the host acks, while the baseline
-        // keeps tracking silently so the ghost edge never fires later. The
-        // question chime is NOT gated: an instant AwaitingInput ack should
-        // still ring.
         {
             let now = Utc::now();
             type Ping = (String, zeron_proto::SessionStatus, bool, Option<String>);
@@ -1207,10 +881,6 @@ impl Shell {
                     })
                     .collect()
             };
-            // Background-only banners: `active_window()` is app-level (any
-            // Zeron window being key), so a ping for a *background chat* in a
-            // focused app still stays a chime — you're already looking at
-            // Zeron; the sidebar dot carries the rest.
             let app_focused = cx.active_window().is_some();
             for (chat_id, status, send_pending, title) in sessions {
                 let prev = self.sound_prev.insert(chat_id, status);
@@ -1234,17 +904,9 @@ impl Shell {
                 }
             }
         }
-        // Boot: restore the last selected space once the first spaces frame
-        // lands (a still-existing row wins over the auto-selected first one;
-        // the boot-auto-selected chat's own space wins over both — selecting a
-        // chat implies its space, which `select_chat` already applied).
         if !self.space_boot_applied && !state.read(cx).spaces.is_empty() {
             self.space_boot_applied = true;
             if state.read(cx).selected_chat.is_none() {
-                // A set sidebar filter is an explicit standing choice — the
-                // canvas defaults (project AND its device) follow it, even
-                // over a remembered "no project" opt-out. Otherwise the last
-                // selected project stands, unless opted out.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
                 let filter = self.settings.space_filter.clone().filter(&exists);
                 let target = match filter {
@@ -1259,7 +921,6 @@ impl Shell {
                 }
             }
         }
-        // Persist the selected space (the new-tab fallback under "All").
         {
             let selected_space = state.read(cx).selected_space.clone();
             if selected_space != self.settings.last_space_id && selected_space.is_some() {
@@ -1267,11 +928,7 @@ impl Shell {
                 self.schedule_save(cx);
             }
         }
-        // Boot landing: the most recent session once the first chats frame
-        // syncs (manual selection wins).
         self.boot_select_chat(cx);
-        // Heal a dangling sidebar filter (space deleted, possibly elsewhere):
-        // fall back to "All" rather than filtering everything out.
         if state.read(cx).spaces_synced
             && let Some(filter) = self.settings.space_filter.clone()
             && state.read(cx).space_row(&filter).is_none()
@@ -1279,16 +936,9 @@ impl Shell {
             self.settings.space_filter = None;
             self.schedule_save(cx);
         }
-        // Chat switch: restore THAT chat's panel state (per-session open flags;
-        // snap, no tween — the panels belong to the destination chat).
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
         if selected != self.active_chat {
             self.active_chat = selected;
-            // Route history: a chat switch is a navigation. The very first
-            // selection off the untouched boot canvas REPLACES that entry —
-            // zeron's `/` route redirected into the last-used chat, leaving no
-            // dead Back target. Walking history lands here too, but the
-            // destination already equals `current()`, so the push dedups.
             if matches!(self.route, Route::Chat) {
                 let entry = NavEntry::Chat(self.active_chat.clone());
                 if self.nav.len() == 1 && *self.nav.current() == NavEntry::Chat(String::new()) {
@@ -1312,8 +962,6 @@ impl Shell {
         }
     }
 
-    // ---- layout state ----
-
     fn sidebar_target(&self) -> f32 {
         if self.settings.sidebar_collapsed {
             0.0
@@ -1322,18 +970,10 @@ impl Shell {
         }
     }
 
-    /// Does the selected space's folder have git? Owner-stamped and synced —
-    /// gates the Changes pane, its toggle, and Cmd-B with zero RPCs.
     fn space_git_detected(&self, cx: &App) -> bool {
         self.state.read(cx).selected_space_git()
     }
 
-    /// The current chat's changes-pane flag (per-session, in-memory), gated on
-    /// the space having git at all: a stale per-chat open flag must not reopen
-    /// the pane after switching into a non-git space.
-    /// The per-session panel key. The new-chat canvas (no selection) keys per
-    /// SPACE — one shared "" key made a canvas toggle read as global state
-    /// (user report).
     fn panel_key(&self, cx: &App) -> String {
         if self.active_chat.is_empty() {
             let space = self
@@ -1348,16 +988,10 @@ impl Shell {
         }
     }
 
-    /// Whether the right pane shows. NOT gated on git any more: the pane is
-    /// a surface HOST now (terminals work in any space), so only the Git
-    /// surface rows check `space_git_detected`. Still hidden on the
-    /// new-session canvas, where the titlebar carries no toggle to close it
-    /// again (an earlier user request).
     fn right_pane_open(&self, cx: &App) -> bool {
         !self.active_chat.is_empty() && self.panels.get(&self.panel_key(cx)).changes_open
     }
 
-    /// The current chat's terminal flag (per-session, in-memory).
     fn terminal_open(&self, cx: &App) -> bool {
         self.panels.get(&self.panel_key(cx)).terminal_open
     }
@@ -1366,9 +1000,6 @@ impl Shell {
         if !self.right_pane_open(cx) {
             0.0
         } else if self.right_pane_expanded {
-            // Takeover: everything right of the sidebar; the conversation
-            // column (flex_1) collapses to zero behind it. Rides the sidebar's
-            // width tween so a sidebar toggle mid-takeover stays seamless.
             let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
             (self.viewport_width - sidebar_now).max(RIGHT_PANE_MIN)
         } else {
@@ -1385,13 +1016,10 @@ impl Shell {
     }
 
     fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
-        // No git gate: the pane hosts terminals too (see `right_pane_open`).
         let from = self.right_target(cx);
         let key = self.panel_key(cx);
         let open = self.panels.toggle_changes(&key);
         if !open {
-            // Closing always leaves takeover mode — reopening at full bleed
-            // with the conversation gone read as a broken chat.
             self.right_pane_expanded = false;
         }
         self.right_tween = Some(WidthTween::new(from, self.right_target(cx)));
@@ -1399,7 +1027,6 @@ impl Shell {
             && let RightSurface::Diff(id) = self.resolved_right_active(cx)
             && let Some(changes) = self.diffs.get(&id).cloned()
         {
-            // Reopening onto a diff tab revalidates its watch.
             changes.update(cx, |changes, cx| changes.ensure_content(cx));
         }
         cx.notify();
@@ -1414,9 +1041,6 @@ impl Shell {
         terminal
     }
 
-    /// The right pane's surface tabs in the STORED (drag-reorderable) order —
-    /// `(surface, title)`; entries whose backing tab/entity is gone are
-    /// skipped.
     fn right_surface_rows(&self, cx: &App) -> Vec<(RightSurface, SharedString)> {
         let key = self.panel_key(cx);
         let stored: &[RightSurface] = self
@@ -1435,8 +1059,6 @@ impl Shell {
                 RightSurface::Diff(id) => self
                     .diffs
                     .get(id)
-                    // Contextual title (user request): the pane's scope
-                    // label, or the pinned commit's subject.
                     .map(|changes| (*surface, changes.read(cx).tab_title())),
                 RightSurface::Terminal(tab) => terminals
                     .iter()
@@ -1451,7 +1073,6 @@ impl Shell {
             .collect()
     }
 
-    /// Drag-reorder a surface tab within this chat's strip.
     fn reorder_right_tabs(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let key = self.panel_key(cx);
         if let Some(tabs) = self.right_tabs.get_mut(&key)
@@ -1465,8 +1086,6 @@ impl Shell {
         }
     }
 
-    /// Track the hovered drop slot mid-drag (the terminal drawer's
-    /// `update_drag_over`, ported: epoch bumps restart the slide tween).
     fn update_right_tab_drag_over(&mut self, from: usize, over: usize, cx: &mut Context<Self>) {
         match &mut self.right_tab_drag {
             Some(drag) if drag.over != over => {
@@ -1488,9 +1107,6 @@ impl Shell {
         }
     }
 
-    /// The surface that actually renders: the stored pick when it still
-    /// exists, else the first remaining tab, else the picker. Terminal keys
-    /// go stale when their tab closes/exits — never render a dead surface.
     fn resolved_right_active(&self, cx: &App) -> RightSurface {
         let picked = self.panels.get(&self.panel_key(cx)).right_active;
         let rows = self.right_surface_rows(cx);
@@ -1520,24 +1136,17 @@ impl Shell {
                     changes.update(cx, |changes, cx| changes.ensure_content(cx));
                 }
             }
-            // The tab's feed (watch or snapshot) runs from open to close —
-            // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
             RightSurface::Picker => {}
         }
         cx.notify();
     }
 
-    /// The picker's Git card / the `+` menu's Diff row: every click opens a
-    /// FRESH diff tab with its own scope/base selection (multiple diff
-    /// panels, user request).
     fn add_diff_surface(&mut self, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, cx);
     }
 
-    /// A History row click: the commit opens as its own pinned diff tab
-    /// (user request).
     fn add_commit_diff_surface(
         &mut self,
         commit: zeron_proto::GitHistoryCommit,
@@ -1565,8 +1174,6 @@ impl Shell {
         self.set_right_active(RightSurface::Diff(id), cx);
     }
 
-    /// The picker's Terminal card / the `+` menu's Terminal row: every click
-    /// opens a fresh embedded terminal tab.
     fn add_terminal_surface(&mut self, cx: &mut Context<Self>) {
         let panel = self.right_terminal_panel(cx);
         let opened = panel.update(cx, |panel, cx| {
@@ -1583,8 +1190,6 @@ impl Shell {
         }
     }
 
-    /// Spawn-chip events from the primary transcript AND from subagent-tab
-    /// transcripts (nested spawns open their own tabs).
     fn on_transcript_event(
         &mut self,
         _: Entity<Transcript>,
@@ -1609,10 +1214,6 @@ impl Shell {
         }
     }
 
-    /// A spawn chip's "Open subagent": focus the existing tab for that doc,
-    /// or open one. Local-only mode reads the dedicated document for both
-    /// running and completed subagents; the hosted fork additionally tries a
-    /// frozen transcript blob for completed subagents.
     fn add_subagent_surface(
         &mut self,
         chat_id: String,
@@ -1621,8 +1222,6 @@ impl Shell {
         frozen: bool,
         cx: &mut Context<Self>,
     ) {
-        // The chip lives in the conversation column — the pane it opens into
-        // may still be closed.
         if !self.right_pane_open(cx) {
             self.toggle_right_pane(cx);
         }
@@ -1636,8 +1235,6 @@ impl Shell {
         }
         self.subagent_seq += 1;
         let id = self.subagent_seq;
-        // A live subagent follows its streaming end (main-transcript feel);
-        // a frozen one reads top-down.
         let transcript =
             cx.new(|cx| Transcript::for_doc(self.state.clone(), doc_id.clone(), !frozen, cx));
         let events = cx.subscribe(&transcript, Self::on_transcript_event);
@@ -1666,9 +1263,6 @@ impl Shell {
         self.set_right_active(RightSurface::Subagent(id), cx);
     }
 
-    /// Local-only fallback for a finished subagent. The hosted fork fetches a
-    /// static blob here, but this fork has no blob transport, so the
-    /// dedicated document remains the source of truth.
     fn spawn_subagent_snapshot_fetch(
         &self,
         _chat_id: &str,
@@ -1680,8 +1274,6 @@ impl Shell {
         None
     }
 
-    /// A surface tab's ✕. The active fallback happens naturally through
-    /// [`Self::resolved_right_active`] on the next frame.
     fn close_right_surface(
         &mut self,
         surface: RightSurface,
@@ -1694,7 +1286,6 @@ impl Shell {
         }
         match surface {
             RightSurface::Diff(id) => {
-                // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
                 self.diff_subs.remove(&id);
             }
@@ -1703,8 +1294,6 @@ impl Shell {
                 panel.update(cx, |panel, cx| panel.close_tab_by_key(tab, window, cx));
             }
             RightSurface::Subagent(id) => {
-                // Unwatch drops the watch task — that cancels the engine-side
-                // watch and unpins the subagent doc from the engine LRU.
                 if let Some(tab) = self.subagent_tabs.remove(&id) {
                     self.state
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
@@ -1737,9 +1326,6 @@ impl Shell {
         }
     }
 
-    /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
-    /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
-    /// The flag is per chat (zeron `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.terminal_target(cx);
         let key = self.panel_key(cx);
@@ -1748,18 +1334,8 @@ impl Shell {
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
         if open {
-            // Opening lands keyboard focus IN the shell — typing goes straight
-            // to the prompt, no click needed (zeron terminal-panel.tsx: the
-            // visible+active effect calls `terminal.focus()` on every open).
-            // The handle is focusable before the panel's first paint; once the
-            // terminal body mounts with `track_focus` it receives the keys.
             window.focus(&panel.read(cx).focus_handle(), cx);
         } else {
-            // Hiding the panel removes the (likely focused) terminal view;
-            // with nothing focused, window key bindings stop dispatching, so
-            // hand focus to the composer. (Cmd+J is a pure toggle — a second
-            // press closes even while the terminal is focused, as in zeron's
-            // `useHotkey(toggleShortcut, ... setOpenScoped(!open))`.)
             window.focus(&self.composer.focus_handle(cx), cx);
         }
         self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
@@ -1787,7 +1363,7 @@ impl Shell {
         let dy = anchor_y - f32::from(event.event.position.y);
         let viewport_h = f32::from(window.viewport_size().height);
         self.settings.terminal_height = clamp_terminal_height(anchor_h + dy, viewport_h);
-        self.terminal_tween = None; // live drag tracks the pointer
+        self.terminal_tween = None;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1801,7 +1377,7 @@ impl Shell {
         let x = f32::from(event.event.position.x);
         self.settings.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
         self.settings.sidebar_collapsed = false;
-        self.sidebar_tween = None; // live drag tracks the pointer directly
+        self.sidebar_tween = None;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1814,7 +1390,6 @@ impl Shell {
     ) {
         let viewport = f32::from(window.viewport_size().width);
         let width = viewport - f32::from(event.event.position.x);
-        // zeron caps the pane at 52% of the window on top of the absolute range.
         let max = RIGHT_PANE_MAX.min(viewport * 0.52);
         self.settings.right_pane_width = width.clamp(RIGHT_PANE_MIN, max.max(RIGHT_PANE_MIN));
         self.right_tween = None;
@@ -1822,20 +1397,12 @@ impl Shell {
         cx.notify();
     }
 
-    /// Debounced settings write: waits [`SAVE_DEBOUNCE_MS`], then persists the
-    /// latest snapshot on the background executor. Re-scheduling drops (cancels)
-    /// the previous timer.
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let dir = self.data_dir.clone();
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(SAVE_DEBOUNCE_MS))
                 .await;
-            // Re-stamp the appearance from the global before writing. The View
-            // menu changes it through `appearance::set_mode`, which never touches
-            // this shell's in-memory copy — without this, the next pane resize
-            // would quietly write the boot-time appearance back over the user's
-            // choice.
             let Ok(snapshot) = this.update(cx, |shell, cx| {
                 shell.settings.appearance = crate::appearance::mode(cx);
                 shell.settings.clone()
@@ -1856,9 +1423,6 @@ impl Shell {
         AppState::bootstrap(self.state.clone(), self.boot.clone(), cx);
     }
 
-    // ---- routes / settings ----
-
-    /// Close the user menu through the exit animation (no-op when closed).
     fn close_user_menu(&mut self, cx: &mut Context<Self>) {
         if self.user_menu.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.user_menu);
@@ -1866,7 +1430,6 @@ impl Shell {
         }
     }
 
-    /// Close the session-row context menu through the exit animation.
     fn close_chat_menu(&mut self, cx: &mut Context<Self>) {
         if self.chat_menu.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.chat_menu);
@@ -1875,8 +1438,6 @@ impl Shell {
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
-        // Recreate per visit: the page's ListHarnesses load re-probes which
-        // CLIs are installed, so installing one shows up on the next open.
         if section == SettingsSection::Harnesses {
             self.harnesses_page = None;
         }
@@ -1893,8 +1454,6 @@ impl Shell {
         cx.notify();
     }
 
-    // ---- back/forward (route history) ----
-
     fn navigate_back(&mut self, cx: &mut Context<Self>) {
         if let Some(entry) = self.nav.back() {
             self.apply_nav(entry, cx);
@@ -1907,9 +1466,6 @@ impl Shell {
         }
     }
 
-    /// Land on a history entry WITHOUT recording a new one: the stack already
-    /// points at `entry` (back/forward moved the index); the selection change
-    /// this triggers dedups against `current()` in [`Self::on_state_changed`].
     fn apply_nav(&mut self, entry: NavEntry, cx: &mut Context<Self>) {
         match entry {
             NavEntry::Chat(chat_id) => {
@@ -1928,7 +1484,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Lazily create the entity for a settings section and return it renderable.
     fn settings_outlet(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> AnyElement {
         match section {
             SettingsSection::Devices => {
@@ -1980,7 +1535,6 @@ impl Shell {
                             cx,
                         )
                     });
-                    // Persist the flags whenever the page flips one.
                     self.notifications_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &NotificationsEvent, cx| {
@@ -2008,7 +1562,6 @@ impl Shell {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
                     let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
-                    // Persist + re-apply the keymap whenever the page changes it.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
@@ -2039,9 +1592,6 @@ impl Shell {
         }
     }
 
-    // ---- sidebar mutations ----
-
-    /// Fire a Mutate op; failures surface in the sidebar notice strip.
     fn mutate(&mut self, params: serde_json::Value, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.sidebar_notice = Some("Engine not connected".into());
@@ -2211,8 +1761,6 @@ impl Shell {
             self.sync_flow = SyncFlow::Canceling;
         }
         self.auth_task = Some(cx.spawn(async move |this, cx| {
-            // Do not race SignOut against an exchange or organization write
-            // that can still persist a session after credentials were cleared.
             if let Some(task) = pending_auth {
                 task.await;
             }
@@ -2279,11 +1827,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// The wizard's choice step chose a path: stop the local runtime, boot the
-    /// synced one in-place (mirror of the sign-out transition), then let
-    /// [`Self::drive_sync_switch`] run the import once the runtime is ready.
-    /// Failure falls back to the quit-and-reopen dialog — the local profile is
-    /// untouched, so the old path is always a safe exit.
     fn start_synced_switch(&mut self, import: bool, cx: &mut Context<Self>) {
         if self.runtime_change_task.is_some() {
             return;
@@ -2313,9 +1856,6 @@ impl Shell {
                 shell.runtime_change_task = None;
                 match result {
                     Ok(()) => {
-                        // Keep `Switching { import }`: the state observer sees
-                        // the replacement runtime reach Ready and advances the
-                        // wizard from there.
                         shell.org = None;
                         shell.route = Route::Chat;
                         shell.space_boot_applied = false;
@@ -2334,16 +1874,12 @@ impl Shell {
         cx.notify();
     }
 
-    /// Advance the in-place switch when the replacement runtime lands: Ready +
-    /// Synced starts the import stream (or finishes immediately when the user
-    /// chose a fresh start); a runtime that comes back non-synced fell out of
-    /// the swap — surface the quit fallback rather than pretend.
     fn drive_sync_switch(&mut self, cx: &mut Context<Self>) {
         let SyncFlow::Switching { import } = self.sync_flow else {
             return;
         };
         if self.runtime_change_task.is_some() {
-            return; // still stopping the local runtime
+            return;
         }
         let (ready, scope) = {
             let state = self.state.read(cx);
@@ -2379,8 +1915,6 @@ impl Shell {
         }
     }
 
-    /// Subscribe to the engine's one-time import stream and mirror its
-    /// progress into the wizard.
     fn spawn_local_import(&mut self, cx: &mut Context<Self>) {
         if self.import_task.is_some() {
             return;
@@ -2416,8 +1950,6 @@ impl Shell {
                     if ended {
                         shell.import_task = None;
                         shell.import_current = None;
-                        // A stream that died before its summary is a failure —
-                        // offer the in-place retry (idempotent).
                         if matches!(shell.sync_flow, SyncFlow::Importing { .. }) {
                             shell.sync_flow = SyncFlow::ImportFailed { notice_open: true };
                             shell.runtime_change_error =
@@ -2463,10 +1995,6 @@ impl Shell {
             }
             Some("summary") => {
                 self.import_current = None;
-                // A summary with errors is a FAILED import, however normally
-                // the stream ended — never present a partial migration as
-                // complete (the engine keeps collecting per-item failures
-                // precisely so this can be surfaced).
                 match import_summary_outcome(item) {
                     Ok((imported, skipped)) => {
                         self.sync_flow = SyncFlow::ImportDone { imported, skipped };
@@ -2567,8 +2095,6 @@ impl Shell {
         cx.notify();
     }
 
-    // ---- org gate ----
-
     fn ensure_org_ui(&mut self, cx: &mut Context<Self>) {
         if self.org.is_some() {
             return;
@@ -2642,8 +2168,6 @@ impl Shell {
                     if let Err(err) = result {
                         org.error = Some(format!("{err}").into());
                     }
-                    // Success: the AuthStatus stream flips to SignedIn and the
-                    // gate falls away on its own.
                 }
                 cx.notify();
             })
@@ -2681,12 +2205,6 @@ impl Shell {
         cx.notify();
     }
 
-    // ---- render pieces ----
-
-    /// Evaluate a width tween at "now" (manual drive — see [`WidthTween`]).
-    /// Mid-flight: eased 200ms lerp, and `motion_active` is flagged so render
-    /// schedules the next animation frame. Finished, stale, absent, or under
-    /// reduced motion: exactly `target`. Honors `ZERON_MOTION_SCALE`.
     fn eval_tween(&self, tween: Option<WidthTween>, target: f32) -> f32 {
         let Some(WidthTween { from, to, started }) = tween else {
             return target;
@@ -2703,8 +2221,6 @@ impl Shell {
         motion::lerp(from, to, RESIZE.progress(raw))
     }
 
-    /// Animated width container: tweens 200ms ease-out on collapse/expand, and
-    /// clips a fixed-width inner so content never reflows mid-transition.
     fn pane_container(
         &self,
         tween: Option<WidthTween>,
@@ -2720,31 +2236,16 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The animated spacer clearing the macOS traffic lights ahead of a
-    /// titlebar control cluster. Fullscreen toggles tween the cluster start
-    /// over 200ms ease-out ([`RESIZE`]; reduced motion snaps).
-    /// `None` off macOS — no phantom flex child.
     fn titlebar_spacer(&self, container_pad: f32) -> Option<AnyElement> {
         if !cfg!(target_os = "macos") {
             return None;
         }
         let fullscreen = self.fullscreen.unwrap_or(false);
-        // The tween runs in cluster-start coordinates; the spacer is that
-        // minus the container's own padding.
         let start = self.eval_tween(self.titlebar_tween, titlebar_cluster_start(fullscreen));
         let width = (start - container_pad).max(0.0);
         Some(div().flex_none().h_full().w(px(width)).into_any_element())
     }
 
-    /// The header's content row with the animated left inset — the native port
-    /// of zeron __root.tsx `transition-[padding-left] duration-200 ease-out` +
-    /// `style={{ paddingLeft: headerInset }}`: on sidebar toggles (and macOS
-    /// fullscreen flips) the SAME element's padding tweens, so the title
-    /// glides to its new x-position. Route changes SNAP: the tween is killed
-    /// by every route transition (zeron remounts the keyed header variants —
-    /// instant swap, zero horizontal motion).
-    /// Where unified-titlebar content (tabs / the settings label) starts: past
-    /// the traffic lights + control cluster, riding the fullscreen inset tween.
     pub(super) fn title_bar_content_start(&self) -> f32 {
         let fullscreen = self.fullscreen.unwrap_or(false);
         let is_macos = cfg!(target_os = "macos");
@@ -2755,9 +2256,6 @@ impl Shell {
         cluster + CLUSTER_BUTTONS_WIDTH + 10.0
     }
 
-    /// The unified window titlebar: chat → the session tab strip; settings →
-    /// the section label. Full-width on the glass shell; the traffic lights
-    /// and control cluster overlay its left end.
     fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
@@ -2776,10 +2274,6 @@ impl Shell {
         }
     }
 
-    /// Make a titlebar strip drag the window — zed's platform-titlebar
-    /// pattern (zeron's `.drag` region): mark it a [`WindowControlArea::Drag`]
-    /// (macOS app-owned titlebar), hand the drag to the compositor once the
-    /// pointer moves with the button down, and double-click zooms.
     fn titlebar_drag_region(
         &self,
         id: &'static str,
@@ -2797,15 +2291,6 @@ impl Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.titlebar_should_move = true),
             )
-            // Hand the drag to the compositor only while the button is
-            // actually held (`pressed_button` guard): on macOS
-            // `start_window_move` runs AppKit's NATIVE drag session
-            // (`performWindowDragWithEvent:`), and AppKit resolves a quick
-            // second click inside that session as a titlebar double-click —
-            // system zoom — natively, beyond gpui's reach. Without the guard a
-            // stale `titlebar_should_move` (armed by a down whose bubble was
-            // later stopped) would start that session from a mere hover move
-            // between the two clicks of a double-click.
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
                     if this.titlebar_should_move && event.pressed_button == Some(MouseButton::Left)
@@ -2818,8 +2303,6 @@ impl Shell {
             .on_click(|event, window, _| {
                 if event.click_count() == 2 {
                     if cfg!(target_os = "macos") {
-                        // Native titlebar double-click action (zoom/minimize
-                        // per system preference).
                         window.titlebar_double_click();
                     } else {
                         window.zoom_window();
@@ -2828,23 +2311,10 @@ impl Shell {
             })
     }
 
-    /// The ONE top-left window-control cluster (sidebar toggle + back/forward —
-    /// zeron window-controls.tsx): rendered once, in a paint-only overlay layer
-    /// pinned at the window's top-left, ABOVE the sidebar and headers. The
-    /// sidebar width animates *beneath* it, so the buttons keep their element
-    /// identity and never move or remount on collapse/expand; only the
-    /// fullscreen traffic-light inset tweens (the animated spacer). The
-    /// container has no id/listeners — everything between the buttons falls
-    /// through to the titlebar drag strips below.
     fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
-        // The new-session + joins the cluster while the sidebar is collapsed
-        // (fading on the sidebar width tween) — INSIDE the cluster row so it
-        // shares the buttons' exact size and 2px rhythm; a separate mount in
-        // the title row sat 10px off the cluster and read misaligned (user
-        // report).
         let plus_alpha = self.titlebar_plus_alpha();
         let show_plus = matches!(self.route, Route::Chat) && plus_alpha > 0.01;
         div()
@@ -2859,9 +2329,6 @@ impl Shell {
             .gap(px(2.0))
             .px(px(10.0))
             .children(self.titlebar_spacer(12.0))
-            // Left-side Linux captions (GNOME `close:…` layouts): the
-            // root-level caption overlay owns the buttons; the cluster row
-            // just starts past them, at the shared 2px rhythm.
             .children((self.linux_left_caption_count() > 0).then(|| {
                 div()
                     .flex_none()
@@ -2902,19 +2369,12 @@ impl Shell {
             .into_any_element()
     }
 
-    /// How present the titlebar's new-session + is: 0 with the sidebar open
-    /// (the + lives in the sidebar header), 1 fully collapsed, riding the
-    /// sidebar width tween in between.
     pub(super) fn titlebar_plus_alpha(&self) -> f32 {
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let open_width = self.settings.sidebar_width.max(1.0);
         (1.0 - sidebar_now / open_width).clamp(0.0, 1.0)
     }
 
-    /// Native Windows caption controls integrated into Zeron's unified
-    /// titlebar. `WindowControlArea` maps these hit targets to HTMINBUTTON,
-    /// HTMAXBUTTON, and HTCLOSE, so Windows owns their behavior (including
-    /// Snap Layouts) while GPUI renders the system Segoe caption glyphs.
     fn render_windows_caption_controls(&self, window: &Window, cx: &App) -> Option<AnyElement> {
         if !cfg!(target_os = "windows") {
             return None;
@@ -2961,15 +2421,6 @@ impl Shell {
         )
     }
 
-    /// Which caption buttons zeron itself must draw on Linux: under
-    /// client-side decorations (the Wayland default) nobody else will —
-    /// without these the window has NO minimize/maximize/close at all.
-    /// Server-side decorations (X11 WMs, KDE with SSD) already draw real
-    /// buttons, so `None` there. The desktop's layout (GNOME's
-    /// `button-layout` gsetting via `cx.button_layout()`) decides side and
-    /// order — min/max/close on the right by default; controls the
-    /// compositor can't do (e.g. minimize on some Wayland compositors) drop
-    /// out, close always stays.
     #[cfg(target_os = "linux")]
     fn resolve_linux_captions(window: &Window, cx: &App) -> Option<gpui::WindowButtonLayout> {
         use gpui::{MAX_BUTTONS_PER_SIDE, WindowButton, WindowButtonLayout};
@@ -3021,8 +2472,6 @@ impl Shell {
             .map_or(0, |l| l.right.iter().flatten().count())
     }
 
-    /// Right padding titlebar content needs to clear the platform's caption
-    /// controls (native Windows cluster / zeron-drawn Linux buttons).
     pub(super) fn titlebar_right_pad(&self, base: f32) -> f32 {
         titlebar_right_padding(
             cfg!(target_os = "windows"),
@@ -3031,17 +2480,12 @@ impl Shell {
         )
     }
 
-    /// Zeron-drawn Linux caption controls, one overlay per populated side.
-    /// Shell-level chrome like the Windows cluster: mounted at the root so
-    /// they stay above the splash and every auth/org/error gate.
     fn render_linux_caption_controls(&self, window: &Window, cx: &App) -> Vec<AnyElement> {
         let Some(layout) = self.linux_captions else {
             return Vec::new();
         };
         let theme = Theme::of(cx);
         let is_maximized = window.is_maximized();
-        // Ids can be per-button (not per-side): the layout parser dedups, so
-        // a button never appears on both sides at once.
         let strip = |buttons: &[Option<gpui::WindowButton>]| {
             div()
                 .absolute()
@@ -3102,10 +2546,6 @@ impl Shell {
             Route::Chat => self.render_chat_sidebar(&theme, cx),
         };
         let target = self.sidebar_target();
-        // Transparent — the sidebar sits directly on the frost shell; the main
-        // card's own border provides the separation. The content row spans the
-        // full window height (the titlebar overlays it), so the column pads
-        // itself below the chrome.
         self.pane_container(
             self.sidebar_tween,
             target,
@@ -3117,9 +2557,6 @@ impl Shell {
         )
     }
 
-    /// Settings-mode sidebar (zeron settings-sidebar.tsx): window-control
-    /// strip, "Settings" heading, icon section rows styled like session rows,
-    /// and a Back row pinned to the bottom.
     fn render_settings_nav(
         &mut self,
         section: SettingsSection,
@@ -3135,10 +2572,6 @@ impl Shell {
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };
-        // Match the user's dragged sidebar width — the pane container clips to
-        // it, so a hardcoded default here left hover washes stopping short of
-        // the sidebar's right edge (user-reported). Device identity lives on
-        // the Accounts page now — the one surface where the device matters.
         div()
             .w(px(self.settings.sidebar_width))
             .h_full()
@@ -3174,8 +2607,6 @@ impl Shell {
                                 .py(px(6.0))
                                 .text_size(px(13.0))
                                 .when(selected, |el| {
-                                    // Same tokens as the main sidebar's session
-                                    // rows — the two sidebars must feel alike.
                                     el.bg(crate::theme::glass_selected_bg())
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                 })
@@ -3198,7 +2629,6 @@ impl Shell {
                         }),
                     )),
             )
-            // Back pinned to the bottom (zeron settings-sidebar.tsx).
             .child(
                 div().px(px(Theme::SPACE_SM)).pb(px(12.0)).child(
                     div()
@@ -3216,8 +2646,6 @@ impl Shell {
                         .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
                         .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
                         .child(
-                            // AltArrowLeft chevron (zeron settings-sidebar.tsx),
-                            // not the straight history arrow.
                             icon(icons::ALT_ARROW_LEFT)
                                 .size(px(16.0))
                                 .text_color(theme.text_muted),
@@ -3228,10 +2656,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row (zeron session-row.tsx): status rail on the left
-    /// (a live 2×3 mini spinner while working, a dot otherwise), title +
-    /// relative time on the first line, branch metadata underneath aligned to
-    /// the title. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
         &self,
@@ -3246,12 +2670,6 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Activity, not position (t3code Sidebar): status is a small colored
-        // word + glyph in the row's top-right corner — Working animates the
-        // composer-strip spinner, Done wears a check; Idle rows show the
-        // relative time instead. Hovering the ROW swaps the corner for the
-        // ARCHIVE button (UNARCHIVE on rows in the sidebar's archived
-        // accordion), t3code's settle-on-hover.
         let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
         let status_color = spaces::status_dot_color(status, theme);
         let status_label: Option<&'static str> = match status {
@@ -3268,12 +2686,6 @@ impl Shell {
                 .items_center()
                 .gap(px(4.0))
                 .h(px(18.0))
-                // The pill's padding bleeds right into the row's padding so
-                // its TEXT right-aligns exactly where the status word/time
-                // sits — the swap moves pixels around the label, not it.
-                // 4px: what's left of the row's 8px padding then equals the
-                // 4px of air above the pill (18px tall on the 14px line,
-                // 6px row padding minus the 2px overflow).
                 .px(px(4.0))
                 .mr(px(-4.0))
                 .rounded(px(5.0))
@@ -3303,9 +2715,6 @@ impl Shell {
         } else {
             match status_label {
                 Some(label) => {
-                    // Glyph slot: Done wears the check; every other status a
-                    // dot in its color (the Working spinner lives at the
-                    // row's bottom-right, not up here).
                     let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
                         icon(icons::CHECK)
                             .size(px(11.0))
@@ -3342,24 +2751,11 @@ impl Shell {
                     .into_any_element(),
             }
         };
-        // One stable wrapper across both states (identity keeps the hover
-        // from flickering as the content swaps); the swap is driven by the
-        // ROW's hover (user request — corner-only felt undiscoverable), but
-        // archiving only clicks on the corner itself, so the row's own click
-        // stays the selector.
         let corner: AnyElement = {
             let archive_id = id.clone();
             div()
                 .id(SharedString::from(format!("chat-corner-{id}")))
                 .flex_none()
-                // Pin the corner to line 1's text height so the archive pill
-                // (taller, padded) overflows vertically instead of growing the
-                // row — the swap must not shift the card's content.
-                // NO occlude: the ROW's hover drives the swap, and an
-                // occluding corner un-hovered the row underneath it —
-                // pill mounts, steals the pointer, row un-hovers, pill
-                // unmounts, repeat (user-reported flicker). The pill's
-                // stop_propagation click is separation enough.
                 .h(px(14.0))
                 .flex()
                 .items_center()
@@ -3378,18 +2774,12 @@ impl Shell {
         let subline = theme.text_muted.opacity(0.5);
         let select_id = id.clone();
         let menu_id = id.clone();
-        // Hover fades over transition-colors (zeron session-row.tsx) — both
-        // the wash and the title brighten ride the same 150ms blend.
         let fade_key = format!("chat-row-{id}");
         let rest_bg = if selected {
             selected_wash
         } else {
             crate::theme::wash(0.0)
         };
-        // A selected row must NOT drift toward the hover wash: in dark the two
-        // fills are identical so the blend is a no-op, but light's hover sits
-        // below its near-opaque selected fill, and blending toward it visibly
-        // dimmed the active row under the pointer (user report).
         let hover_bg = if selected { selected_wash } else { hover };
         let rest_text = if selected { text } else { text.opacity(0.8) };
         div()
@@ -3402,11 +2792,6 @@ impl Shell {
             .py(px(10.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, text))
             .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
-            // No selection ring (user request) — the wash alone marks the
-            // active row.
-            // Row hover drives BOTH the wash blend and the corner's
-            // status→Archive swap (one listener — gpui allows a single
-            // hover listener per element).
             .on_hover({
                 let fade_hover = motion::hover_listener(fade_key.clone());
                 let hover_id = id.clone();
@@ -3434,9 +2819,6 @@ impl Shell {
                     cx.notify();
                 }),
             )
-            // Line 1: the session title, with the status word / time-ago in
-            // the corner. The project is NOT repeated here — it titles the
-            // whole group above (see `render_space_header`).
             .child(
                 div()
                     .w_full()
@@ -3455,11 +2837,6 @@ impl Shell {
                     )
                     .child(div().text_color(subline).child(corner)),
             )
-            // Line 2 (always): the branch reads from the left, badges hug the
-            // right edge — harness brand mark in the card's bottom-right
-            // corner, the working spinner beside it. Pinned to the 14px text
-            // line so a session with neither branch nor harness still spends
-            // CHAT_ROW_HEIGHT (the FLIP resort math reads that as fixed).
             .child(
                 div()
                     .w_full()
@@ -3525,22 +2902,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Chat-mode sidebar (spaces overhaul): window-control strip, the Spaces
-    /// section (folder + device rows, add-space), the global Active sessions
-    /// list, the notice strip, and the UserMenu (§1.6).
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        // Keyed rows: (stable key, estimated height, element) — the key + height
-        // list drives the §1.6 resort FLIP diff below (attention-bucket
-        // promotions glide; cleared rows just go).
         let keyed: Vec<(String, f32, AnyElement)> = self.render_active_rows(theme, cx);
 
-        // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
-        // list changes (new activity resort, grouping flip), surviving rows
-        // glide from their old y to the new one — layout is already at the new
-        // position; the offset is a paint-only relative inset animated to 0
-        // over 260ms cubic-bezier(0.22,1,0.36,1). New rows fade in; removals
-        // just go (matching the original). First fill and chat switches (which
-        // don't reorder) never animate.
         let order: Vec<(String, f32)> = keyed.iter().map(|(k, h, _)| (k.clone(), *h)).collect();
         if self.sidebar_prev_order != order {
             if !self.sidebar_prev_order.is_empty() {
@@ -3586,8 +2950,6 @@ impl Shell {
 
         let settings_button = self.render_settings_button(theme, cx);
 
-        // The space filter lives ABOVE the scroll region (fixed) so its
-        // dropdown can float without being clipped by the list's overflow.
         let filter_row = self.render_spaces_filter(theme, cx);
 
         div()
@@ -3595,18 +2957,7 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
-            // (No titlebar strip: the unified window titlebar spans the whole
-            // window above this column.)
             .child(filter_row)
-            // The (filtered) Sessions list scrolls inside an EdgeFade scope —
-            // a true per-glyph gradient at active overflow edges. Glass-safe
-            // (no painted overlay can fade content over see-through blur) and
-            // equivalent on opaque themes: alpha→0 reveals the surface tone
-            // underneath, same as the gradient overlays it replaced. Overflow
-            // is read at PAINT time via the scroll handle — render-time gating
-            // rode the previous frame's offset, so the last frame of a content
-            // shrink (row archived while scrolled) left a phantom fade stuck
-            // over an unscrollable list (user report).
             .child(
                 crate::edge_fade::edge_faded(
                     SIDEBAR_GLASS_FADE_BAND,
@@ -3621,8 +2972,6 @@ impl Shell {
                             .px(px(Theme::SPACE_SM))
                             .flex()
                             .flex_col()
-                            // No "Sessions" header (user request) — the list
-                            // is the whole column; a little air stands in.
                             .pt(px(4.0))
                             .child(if !list_items.is_empty() {
                                 div()
@@ -3645,7 +2994,6 @@ impl Shell {
                 )
                 .fade_overflow_y(&self.sidebar_scroll),
             )
-            // Inline mutation-failure notice.
             .when_some(self.sidebar_notice.clone(), |el, notice| {
                 el.child(
                     div()
@@ -3676,8 +3024,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Direct Settings entry point. Local mode is the only runtime surfaced
-    /// in the sidebar, so there is no account/scope dropdown here.
     fn render_settings_button(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
         let menu_identity = SharedString::from("Settings");
@@ -3718,11 +3064,6 @@ impl Shell {
             );
         if self.user_menu.get().is_some() {
             let closing = self.user_menu.closing_since();
-            // user-menu.tsx content: `w-[--radix-dropdown-menu-trigger-width]`
-            // (exactly as wide as the trigger row — sidebar minus its p-2
-            // gutters), `flex-col gap-0.5`, then: one small muted email line
-            // (`px-2 pb-1 pt-1.5 text-[11px] text-muted-foreground/70`),
-            // the action selected by the runtime scope, then "Settings".
             let menu = popover::popover_card(theme)
                 .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -3848,8 +3189,6 @@ impl Shell {
             Some(AuthState::SignedIn { user, .. }) => Some(SharedString::from(user.email.clone())),
             _ => None,
         };
-        // Spaces count as local work too: a projects-only profile must get
-        // the import choice, not a bare "Switch now".
         let (local_chats, local_spaces) = {
             let state = self.state.read(cx);
             (state.chats.len(), state.spaces.len())
@@ -3897,7 +3236,6 @@ impl Shell {
                     )),
                 )
                 .into_any_element(),
-            // ── in-place switch wizard ────────────────────────────────────
             SyncFlow::SwitchOffer { notice_open: true } => {
                 let has_local_work = work_phrase.is_some();
                 let body: SharedString = match (&signed_in_email, &work_phrase) {
@@ -4003,7 +3341,6 @@ impl Shell {
                     );
                 }
                 card.child(
-                    // Determinate progress: a hairline track with an accent fill.
                     div()
                         .mt(px(14.0))
                         .h(px(4.0))
@@ -4195,8 +3532,6 @@ impl Shell {
         Some(popover::modal("sync-lifecycle-dialog", viewport, card))
     }
 
-    /// Floating layers owned by the shell: context menus, edit dialogs, and
-    /// the local-to-synced account lifecycle.
     fn render_overlays(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -4406,9 +3741,6 @@ impl Shell {
         let theme = &theme_owned;
         let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
 
-        // Settings route: just the section outlet — the section label lives in
-        // the unified window titlebar now (render_title_bar). Settings never
-        // underlaps: pad below the overlaid titlebar.
         if let Route::Settings(section) = self.route {
             let outlet = self.settings_outlet(section, cx);
             return div()
@@ -4434,15 +3766,9 @@ impl Shell {
             .unwrap_or_default()
             .into();
 
-        // Content outlet: selected chat → transcript; nothing selected → the
-        // "Send a message to start" canvas with a watermark; no spaces at all
-        // → the onboarding card. The composer sits below the first two
-        // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
         } else if !has_spaces && !no_project {
-            // Onboarding (first boot / after the destructive wipe): no folders
-            // to work in yet — one clear affordance.
             let _ = faint;
             div()
                 .size_full()
@@ -4488,9 +3814,6 @@ impl Shell {
                 ))
                 .into_any_element()
         } else {
-            // New-chat canvas (zeron index.tsx): the zeron mark over the
-            // TARGET selectors (device + project — moved up from the
-            // composer footer, user request) and the helper line.
             let helper: SharedString = if space_name.is_empty() {
                 "Send a message to start a new session.".into()
             } else {
@@ -4514,8 +3837,6 @@ impl Shell {
                             icon(icons::ZERON_LOGO)
                                 .w(px(41.9))
                                 .h(px(48.0))
-                                // 0.09 read as barely-there on the glass
-                                // backdrop (user report).
                                 .text_color(theme.text.opacity(0.2)),
                         )
                         .child(div().mt(px(16.0)).child(selectors))
@@ -4531,11 +3852,6 @@ impl Shell {
         };
 
         let status = self.render_status_strip(cx);
-        // File dropzone over the ENTIRE conversation column (transcript +
-        // composer, not just the pill): dragging OS files anywhere across the
-        // chat area shows the "Drop images to attach" veil; a drop stages the
-        // files in the composer. `has_active_drag` gates the veil so a drag
-        // that left the window (FileDrop Exited) can't strand it.
         let file_drag_active = self.file_drag_active && cx.has_active_drag();
         div()
             .id("chat-dropzone")
@@ -4561,60 +3877,27 @@ impl Shell {
                     .update(cx, |composer, cx| composer.add_paths(paths, cx));
                 cx.notify();
             }))
-            .child(
-                // Full-height underlay: the transcript viewport spans the
-                // whole column, scrolling UNDER the titlebar above and the
-                // composer stack below. The per-glyph EdgeFade (glass-safe,
-                // same as the sidebar's) spans the full column with
-                // ASYMMETRIC bands sized to the chrome: content is opaque at
-                // the chrome's inner edge and fades to zero at the window
-                // edge — visible mid-fade through the glass chrome it slides
-                // under. Always on (the resting paddings keep pinned content
-                // out of the bands, and gating on measured scroll state left
-                // the top unfaded for one frame on session switch — user
-                // report). The jump pill floats outside the fade scope,
-                // anchored above the measured stack.
-                {
-                    // The terminal dock is NOT glass the transcript may slide
-                    // under: with the dock's translucent fill, transcript text
-                    // ghosted through the grid (user report). The underlay
-                    // ends at the dock's top instead, riding the same height
-                    // tween the dock animates with; `stack_h` below is only
-                    // the chrome that still overlaps the transcript (status
-                    // strip + composer).
-                    let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
-                    let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
-                    // Opaque from the composer PILL's top (the reserved
-                    // status strip above it is empty air), zero at the
-                    // underlay's bottom edge.
-                    let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bottom(px(term_h))
-                        .child(
-                            crate::edge_fade::edge_faded(
-                                Theme::TRANSCRIPT_FADE_BAND,
-                                true,
-                                true,
-                                div().size_full().child(outlet),
-                            )
-                            // Fully faded BY the titlebar's bottom edge (the
-                            // title text is opaque — overlap read as collision),
-                            // ramping in the band just below it.
-                            .inset_top(Theme::TITLEBAR_HEIGHT)
-                            .band_top(Theme::TRANSCRIPT_FADE_BAND)
-                            .band_bottom(bottom_band),
+            .child({
+                let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+                let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
+                let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bottom(px(term_h))
+                    .child(
+                        crate::edge_fade::edge_faded(
+                            Theme::TRANSCRIPT_FADE_BAND,
+                            true,
+                            true,
+                            div().size_full().child(outlet),
                         )
-                        .children(self.render_jump_to_bottom(stack_h, cx))
-                },
-            )
-            // The glass chrome stack, floating over the transcript's bottom:
-            // reserved status strip (h-6, the WorkingIndicator — the composer
-            // below never shifts), composer, terminal dock. A paint-time
-            // canvas measures the stack for next frame's fade inset and
-            // transcript clearance. The flex_1 spacer has no id/listeners, so
-            // pointer + wheel events over it fall through to the list below.
+                        .inset_top(Theme::TITLEBAR_HEIGHT)
+                        .band_top(Theme::TRANSCRIPT_FADE_BAND)
+                        .band_bottom(bottom_band),
+                    )
+                    .children(self.render_jump_to_bottom(stack_h, cx))
+            })
             .child(div().flex_1().min_h_0())
             .child({
                 let measured = self.bottom_stack.clone();
@@ -4652,16 +3935,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The "↓ Scroll to bottom" pill (round-9 §3): a LABELED rounded-full
-    /// chip — down-arrow glyph + 13px label on a near-opaque raised surface
-    /// with a hairline — horizontally centered over the transcript column and
-    /// floating a small gap above the composer. It hangs 14px below the
-    /// conversation region (through the reserved h-6 status strip, whose
-    /// content is left-aligned) so its bottom edge sits ~10px above the pill.
-    /// Shown past the transcript's 320px threshold; 180ms fade + 2px rise in.
-    /// `stack_h` is the measured bottom chrome stack the full-height
-    /// transcript scrolls under — the pill anchors just above it (the -14
-    /// carries the old status-strip overlap).
     fn render_jump_to_bottom(
         &mut self,
         stack_h: f32,
@@ -4683,17 +3956,6 @@ impl Shell {
         )
     }
 
-    /// The jump pill itself — shared between the conversation overlay and
-    /// the subagent pane so both read as one control. `anim_key`/`hover_key`
-    /// must be distinct per instance (they key global animation state).
-    ///
-    /// Glass-forward like the composer pill it floats near: a backdrop blur
-    /// under the floating-card tint ([`Theme::glass_overlay`]), hover
-    /// brightening via the standard glass wash painted OVER the tint —
-    /// mixing the tint TOWARD the wash would thin the pill on hover, the
-    /// exact see-through regression the old opaque pill's comment warned
-    /// about. Opaque appearances keep the raised-surface treatment
-    /// (`frosted` passes through there anyway).
     fn jump_pill(
         &self,
         anim_key: &'static str,
@@ -4727,8 +3989,6 @@ impl Shell {
                 transcript.update(cx, |transcript, cx| transcript.jump_to_bottom(cx));
             }))
             .child(
-                // The hover wash rides an inner full-height layer so it
-                // composites over the tint (a div has one bg).
                 div()
                     .h_full()
                     .rounded_full()
@@ -4751,24 +4011,15 @@ impl Shell {
                             .child(SharedString::from("Scroll to bottom")),
                     ),
             );
-        // Frost OUTSIDE the entry animation (the composer pill's exact
-        // composition): one scene layer — blur, then the pill's quads, then
-        // glyphs — so the pill always composes over the transcript content
-        // scrolling under it, and never loses its washes to the kind-sorted
-        // draw order (frost.rs module docs).
         crate::frost::frosted(15.0, 16.0, motion::dialog_in(anim_key, pill)).into_any_element()
     }
 
-    /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
-    /// over the panel, the whole container height-animated 200 ms on toggle.
     fn render_terminal_container(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let target = self.terminal_target(cx);
         let tween = self.terminal_tween;
         if target <= 0.0 && tween.is_none() {
             return gpui::Empty.into_any_element();
         }
-        // Defensive: an open flag needs its entity (and set_open) even if
-        // toggle_terminal never created one.
         if self.terminal_open(cx) && self.terminal.is_none() {
             let panel = self.terminal_panel(cx);
             panel.update(cx, |panel, cx| panel.set_open(true, cx));
@@ -4809,11 +4060,6 @@ impl Shell {
                 }),
             );
 
-        // Fixed-height inner clipped by the animated container: content never
-        // reflows mid-transition (same trick as the side panes). The handle
-        // FLOATS over the panel's top edge (painted after, so it wins hit
-        // testing) instead of stacking above it — stacked, its 5px read as
-        // dead air between the seam and the tab bar (user report).
         let inner = div()
             .h(px(height))
             .w_full()
@@ -4834,16 +4080,11 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Working indicator strip: gradient spinner + rotating flavour word (7s,
-    /// seeded per chat) + elapsed, staleness-gated via [`Indicator`]; falls back
-    /// to a "Sending…" bridge and then the engine mode line.
     fn render_status_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
         let state = self.state.read(cx);
 
-        // Aligned with the composer column: centered, same max width, small
-        // inner gutter (zeron's `mx-auto h-6 max-w-3xl px-2`).
         let strip = div()
             .h(px(Theme::STATUS_STRIP_HEIGHT))
             .flex_none()
@@ -4860,10 +4101,6 @@ impl Shell {
             return strip.into_any_element();
         };
         let indicator = state.indicator_for(&chat_id, now);
-        // Timer base: the freshest of the session row's turn start and the
-        // in-flight send. During the send→ack window the row (if any) still
-        // carries the PREVIOUS turn's start, and using it opened the timer at
-        // the old turn's elapsed instead of 0:00.
         let started = state
             .session_for(&chat_id)
             .and_then(|s| s.started_at)
@@ -4875,16 +4112,9 @@ impl Shell {
             .unwrap_or(0);
         let sending = self.composer.read(cx).is_sending();
 
-        // Unused here since the Working loader moved into the transcript
-        // (its trailer computes its own elapsed).
         let _ = elapsed_secs;
         match indicator {
-            // The working loader lives in the TRANSCRIPT now, under the
-            // streaming reply (user request) — the strip stays empty (its
-            // reserved height still steadies the composer).
             Indicator::Working => strip.into_any_element(),
-            // No label: the QuestionPanel right below IS the awaiting-input
-            // surface — a strip caption above it was redundant (user request).
             Indicator::AwaitingInput => strip.into_any_element(),
             Indicator::Errored => strip
                 .text_color(theme.danger)
@@ -4909,10 +4139,6 @@ impl Shell {
         }
     }
 
-    /// Right pane — the surface host (t3code RightPanelTabs): hidden by
-    /// default, drag-resizable. Content is the ACTIVE surface — the Diff
-    /// page (its options row + the lazy [`Changes`] viewer), an embedded
-    /// terminal, or the "Open a surface" picker when no tabs exist.
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let bg = theme.bg;
@@ -4920,12 +4146,7 @@ impl Shell {
             match self.resolved_right_active(cx) {
                 RightSurface::Diff(id) if self.diffs.contains_key(&id) => {
                     let changes = self.diffs.get(&id).cloned().expect("checked");
-                    // Idempotent — also covers a persisted-open pane on boot.
                     changes.update(cx, |changes, cx| changes.ensure_content(cx));
-                    // The diff options (scope dropdown, ref selector,
-                    // fold-all) moved DOWN from the titlebar band — the
-                    // surface tabs own that row now; the expand/close
-                    // buttons stayed up there (user request).
                     let controls =
                         changes.update(cx, |changes, cx| changes.render_header_controls(cx));
                     div()
@@ -4946,8 +4167,6 @@ impl Shell {
                 }
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
-                    // Keep the embedded panel's own active tab aligned with
-                    // the resolved surface (fallbacks can move it).
                     panel.update(cx, |panel, cx| panel.select_tab_by_key(tab, cx));
                     panel.into_any_element()
                 }
@@ -4958,9 +4177,6 @@ impl Shell {
                         .expect("checked")
                         .transcript
                         .clone();
-                    // The pane hosts its own jump pill: the conversation
-                    // overlay's is bound to the PRIMARY transcript, and this
-                    // one anchors to the pane (no composer stack to clear).
                     let pill = transcript.read(cx).jump_button_shown().then(|| {
                         div()
                             .absolute()
@@ -4976,8 +4192,6 @@ impl Shell {
                                 cx,
                             ))
                     });
-                    // Read-only surface: the transcript fills the pane — no
-                    // composer, no status strip.
                     div()
                         .size_full()
                         .relative()
@@ -4992,10 +4206,6 @@ impl Shell {
         } else {
             gpui::Empty.into_any_element()
         };
-        // Flush panel (user request — the inset card is gone): full window
-        // height with a left hairline, glass-friendly like the terminal dock
-        // (translucent over the frost; solid otherwise). The resize grabber
-        // floats over the border seam.
         let handle = self
             .resize_handle(
                 "right-pane-resize",
@@ -5006,9 +4216,6 @@ impl Shell {
             .absolute()
             .top_0()
             .bottom_0()
-            // INSIDE the width-clipped container (a negative inset was
-            // clipped into unreachability — user-reported dead resize),
-            // overlapping the panel's left border.
             .left(px(0.0));
         let panel_bg = if theme.is_glass() {
             bg.opacity(0.4)
@@ -5019,21 +4226,14 @@ impl Shell {
             .size_full()
             .flex()
             .flex_col()
-            // In takeover the panel's left edge IS the sidebar seam, which
-            // already carries the sidebar tone's right hairline — a second
-            // border there doubled up (user report).
             .when(!self.right_pane_expanded, |el| {
                 el.border_l_1().border_color(theme.border)
             })
             .bg(panel_bg)
             .overflow_hidden()
-            // The titlebar is a glass overlay over the full-height content
-            // row; the panel's own chrome starts below it.
             .pt(px(Theme::TITLEBAR_HEIGHT))
             .child(content);
         let target = self.right_target(cx);
-        // Takeover mode has no drag width — the handle would fight the
-        // viewport-derived target.
         let handle = (!self.right_pane_expanded).then_some(handle);
         self.pane_container(
             self.right_tween,
@@ -5047,10 +4247,6 @@ impl Shell {
         )
     }
 
-    /// The right pane's empty state: the "Open a surface" heading over a
-    /// compact vertical list of surface rows (icon + label) — the Capy
-    /// arrangement (user request): the old two-card grid clipped in narrow
-    /// panes and wasted short ones.
     fn render_surface_picker(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let text = theme.text;
@@ -5127,8 +4323,6 @@ impl Shell {
                                     }),
                                 ),
                             )
-                            // Git only where there IS git — the pane itself
-                            // no longer gates on it (terminals work anywhere).
                             .when(self.space_git_detected(cx), |el| {
                                 el.child(
                                     row("surface-card-git", icons::GIT_BRANCH, "Git").on_click(
@@ -5234,17 +4428,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// The titlebar strip over the right pane: one chip per surface tab
-    /// (icon · title · ✕) plus the `+` menu — the t3code RightPanelTabs bar,
-    /// living in the top row; the diff options moved into the pane below.
     pub(crate) fn render_right_tab_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        /// Fixed chip slot — the terminal drawer's drag mechanics (drop-index
-        /// quantisation + slide offsets) assume uniform widths.
         const CHIP_W: f32 = 112.0;
-        const CHIP_SLOT: f32 = CHIP_W + 4.0; // + the strip's own gap
+        const CHIP_SLOT: f32 = CHIP_W + 4.0;
 
         let theme = Theme::of(cx).clone();
-        // Heal drag state if the pointer was released outside the strip.
         if self.right_tab_drag.is_some() && !cx.has_active_drag() {
             self.right_tab_drag = None;
         }
@@ -5256,18 +4444,11 @@ impl Shell {
             .as_ref()
             .map(|d| (d.from, d.over, d.epoch, d.prev_over));
 
-        // Fade flags from the LAST frame's scroll state (invisible lag).
-        // The EdgeFade scope below fades per-pixel on x for glyphs AND
-        // quads/images (fork 5d1f83d) — washes dissolve across the band.
         const FADE_WIDTH: f32 = 36.0;
         let scrolled = -f32::from(self.right_tab_scroll.offset().x);
         let max_scroll = f32::from(self.right_tab_scroll.max_offset().x);
         let fade_left = scrolled > 1.0;
         let fade_right = scrolled < max_scroll - 1.0;
-        // The old session-tab strip's proven scroll shape: the flex row IS
-        // the scroller (id + overflow_x_scroll + track_scroll), wrapped in a
-        // relative min_w_0 region below; drop math runs in CONTENT
-        // coordinates (viewport-relative x plus the scrolled-off width).
         let scroll_for_drag = self.right_tab_scroll.clone();
         let mut strip = div()
             .id("right-surface-strip")
@@ -5313,10 +4494,6 @@ impl Shell {
                 RightSurface::Subagent(_) => icons::BOT,
                 _ => icons::TERMINAL,
             };
-            // A live subagent tab swaps its icon for the mini working
-            // spinner (the history fetch button's in-flight recipe) — the
-            // doc's streaming tail entry IS the run's liveness, so the swap
-            // settles by itself when the subagent finishes.
             let subagent_running = match surface {
                 RightSurface::Subagent(id) => self.subagent_tabs.get(&id).is_some_and(|tab| {
                     self.state
@@ -5327,9 +4504,6 @@ impl Shell {
                 }),
                 _ => false,
             };
-            // t3 tab hover: the surface icon swaps IN PLACE for the close ✕
-            // (same slot, no width jump) — the ✕ only shows while the tab is
-            // hovered (user request).
             let group: SharedString = format!("right-surface-tab-{ix}").into();
             let ghost_title = title.clone();
             let chip = div()
@@ -5346,13 +4520,6 @@ impl Shell {
                 .items_center()
                 .gap(px(3.0))
                 .cursor_pointer()
-                // The old session-tab strip's solved carve-out: NOT
-                // `.occlude()` — a BlockMouse hitbox ends the hit test,
-                // so the scroll container behind the tabs never saw
-                // wheel events and an overflowing strip could not be
-                // scrolled (tabs tile the whole region). ExceptScroll
-                // keeps the titlebar drag-region carve-out and lets the
-                // strip scroll.
                 .block_mouse_except_scroll()
                 .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                     window.prevent_default()
@@ -5365,7 +4532,6 @@ impl Shell {
                     cx.stop_propagation();
                     this.set_right_active(surface, cx);
                 }))
-                // Middle-click closes, like every tab strip.
                 .on_mouse_down(
                     gpui::MouseButton::Middle,
                     cx.listener(move |this, _, window, cx| {
@@ -5385,8 +4551,6 @@ impl Shell {
                     },
                 )
                 .child(
-                    // Leading slot: icon normally, ✕ on tab hover — two
-                    // stacked layers opacity-swapped by the group hover.
                     div()
                         .id(("right-surface-close", ix))
                         .flex_none()
@@ -5453,10 +4617,6 @@ impl Shell {
                         })
                         .child(title),
                 );
-            // Sliding transform while a sibling drags over (the terminal
-            // drawer's exact recipe): animate 150ms between committed
-            // offsets; the dragged tab leaves an invisible spacer — the
-            // ghost carries it.
             let wrapped: AnyElement = match drag {
                 Some((from, over, epoch, prev_over)) if ix != from => {
                     let target = crate::terminal::panel::slide_offset(ix, from, over) * CHIP_SLOT;
@@ -5480,8 +4640,6 @@ impl Shell {
             };
             strip = strip.child(wrapped);
         }
-        // The `+` — a small menu offering the two surfaces (t3 "Add panel
-        // surface"); mirrors the picker cards.
         let plus_open = self.right_plus.get().is_some();
         let plus_fade = "right-surface-add-fade";
         let mut plus = div()
@@ -5557,9 +4715,6 @@ impl Shell {
                                         .size(px(13.0))
                                         .text_color(theme.text_muted),
                                 )
-                                // "Git", not "Git diff" — the surface hosts
-                                // history and per-commit views too (user
-                                // request; matches the picker card).
                                 .child(SharedString::from("Git")),
                         ),
                 )
@@ -5572,9 +4727,6 @@ impl Shell {
             ));
         }
         strip = strip.child(plus);
-        // Edge fades on whichever side hides tabs (flags computed above).
-        // Glass: per-glyph EdgeFade scope over the chips' own opacity ramps;
-        // opaque: painted gradients in the shell surface tone.
         let glass = theme.is_glass();
         let bar_bg = theme.surface;
         let region = div()
@@ -5624,10 +4776,6 @@ impl Shell {
         }
     }
 
-    /// Toggle the changes-panel takeover (the header's expand button, t3code
-    /// parity): the panel grows to fill everything right of the sidebar,
-    /// hiding the conversation column; toggling back restores the saved
-    /// width. Rides the same width tween as open/close so the jump glides.
     fn toggle_right_pane_expand(&mut self, cx: &mut Context<Self>) {
         let from = self.right_target(cx);
         self.right_pane_expanded = !self.right_pane_expanded;
@@ -5638,8 +4786,6 @@ impl Shell {
     fn render_gate_card(&mut self, phase: &GatePhase, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let content: AnyElement = match phase {
-            // Backend unreachable: quiet centered copy (zeron Gate `Failed`),
-            // plus a Retry affordance (the native engine doesn't self-redial).
             GatePhase::Failed(error) => div()
                 .flex()
                 .flex_col()
@@ -5667,8 +4813,6 @@ impl Shell {
                         .child(SharedString::from("Retry")),
                 )
                 .into_any_element(),
-            // Login card (zeron App.tsx Gate): centered card on the grid —
-            // logo, "Log in to Zeron", copy, full-width white Log in button.
             _ => div()
                 .w(px(360.0))
                 .px(px(32.0))
@@ -5739,9 +4883,6 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    // Keyed per phase (zeron App.tsx `<div key={phase}
-                    // className="animate-in">`): every gate swap replays the
-                    // 0.5s entrance instead of mutating one animated element.
                     .child(motion::fade_in(
                         match phase {
                             GatePhase::SignIn => "gate-card-signin",
@@ -5753,8 +4894,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Organization onboarding used by the synced gate and, for a local
-    /// runtime, only after the user explicitly starts the sync opt-in.
     fn render_org_gate(&mut self, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_org_ui(cx);
         let theme = Theme::of(cx).clone();
@@ -5844,9 +4983,6 @@ impl Shell {
                     .into_any_element(),
             };
 
-        // zeron App.tsx OrgGate: w-400 card on the grid — logo, headline,
-        // explainer (+ signed-in email), name form with a white Create button,
-        // then existing memberships and the account escape hatch.
         let blurb: SharedString = match email {
             Some(email) => format!(
                 "Zeron is organized around workspaces — create one for yourself or your team. Signed in as {email}."
@@ -5941,7 +5077,7 @@ impl Shell {
                         .mt(px(16.0))
                         .text_size(px(12.0))
                         .line_height(px(17.0))
-                        .text_color(theme.danger_muted.opacity(0.9)) // red-300
+                        .text_color(theme.danger_muted.opacity(0.9))
                         .child(message),
                 )
             })
@@ -5981,9 +5117,6 @@ impl Shell {
     }
 }
 
-/// The sign-in gate's faint grid backdrop (zeron styles.css `.bg-grid`):
-/// 44px hairlines at white 3.5%, with the radial mask approximated by edge
-/// gradients back into the page background (gpui has no mask-image).
 fn grid_backdrop(theme: &Theme) -> AnyElement {
     let line = crate::theme::hairline(0.035);
     let bg = theme.bg;
@@ -6013,8 +5146,6 @@ fn grid_backdrop(theme: &Theme) -> AnyElement {
         .overflow_hidden()
         .children(verticals)
         .children(horizontals)
-        // Mask approximation: fade the grid back into the background toward
-        // the window edges (the original masks to an ellipse at 50% / 40%).
         .child(
             div()
                 .absolute()
@@ -6070,8 +5201,6 @@ fn grid_backdrop(theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// A size-6 icon button for the titlebar strip (zeron window-controls.tsx:
-/// `grid size-6 place-items-center rounded-md text-muted-foreground`).
 fn window_control_button(
     id: &'static str,
     icon_path: &'static str,
@@ -6089,25 +5218,12 @@ fn window_control_button(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        // zeron window-controls.tsx: `transition-colors` — the wash fades.
         .bg(motion::hover_blend(
             &fade_key,
             theme.glass_hover().opacity(0.0),
             theme.glass_hover(),
         ))
         .on_hover(motion::hover_listener(fade_key))
-        // Buttons in/over a titlebar drag strip must be EXCLUDED from the
-        // strip's event surface entirely. `.occlude()` (gpui
-        // `HitboxBehavior::BlockMouse`) makes the window hit-test STOP at the
-        // button, so every `is_hovered`-guarded strip listener — the
-        // mouse-down that arms the drag, the mouse-move that hands AppKit a
-        // native drag session (`performWindowDragWithEvent:`, whose second
-        // quick click zooms NATIVELY on macOS), and the `click_count == 2`
-        // zoom handler — never fires with the pointer over a button. It also
-        // removes the button's rect from the native Drag control-area
-        // hit-test on Windows/Linux. The click-level stop_propagation is
-        // zed's ButtonLike belt on top. Double-click on EMPTY strip space
-        // still zooms — nothing occludes it there.
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
@@ -6120,9 +5236,6 @@ fn window_control_button(
 const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
 const WINDOWS_CAPTION_WIDTH: f32 = WINDOWS_CAPTION_BUTTON_WIDTH * 3.0;
 
-/// Right padding for titlebar content: past the native Windows caption
-/// cluster, or past zeron's own Linux caption buttons (10px edge inset +
-/// the button row) when the layout puts any on the right.
 fn titlebar_right_padding(is_windows: bool, linux_right_captions: usize, base: f32) -> f32 {
     base + if is_windows {
         WINDOWS_CAPTION_WIDTH
@@ -6133,8 +5246,6 @@ fn titlebar_right_padding(is_windows: bool, linux_right_captions: usize, base: f
     }
 }
 
-/// A Windows-owned caption target using the same system glyphs and native
-/// non-client hit-test areas as GPUI/Zed's platform titlebar.
 fn windows_caption_button(
     id: &'static str,
     glyph: &'static str,
@@ -6175,12 +5286,6 @@ fn windows_caption_button(
         .child(glyph)
 }
 
-/// A Linux caption button in zeron's own cluster style (24px, rounded-6,
-/// 16px linear icon). gpui's `WindowControlArea` hit-testing is inert on
-/// Linux, so unlike the Windows cluster these carry explicit click handlers
-/// (`minimize_window` / `zoom_window` / `remove_window`), the same calls
-/// zed's Linux titlebar makes. `occlude` + `prevent_default` keep them out
-/// of the drag strip's event surface (see [`window_control_button`]).
 fn linux_caption_button(
     id: &'static str,
     icon_path: &'static str,
@@ -6196,8 +5301,6 @@ fn linux_caption_button(
     };
     div()
         .id(id)
-        // gpui svgs don't inherit the div's text color — recolor the glyph
-        // on hover through the group instead (zed's WindowControl idiom).
         .group("linux-caption-button")
         .size(px(24.0))
         .flex_none()
@@ -6223,9 +5326,6 @@ fn linux_caption_button(
         )
 }
 
-/// A titlebar history button (zeron window-controls.tsx): enabled it is a
-/// normal window-control button; disabled it dims to 35% opacity and ignores
-/// the pointer (`disabled:pointer-events-none disabled:opacity-35`).
 fn nav_history_button(
     id: &'static str,
     icon_path: &'static str,
@@ -6240,8 +5340,6 @@ fn nav_history_button(
             .flex()
             .items_center()
             .justify_center()
-            // Even disabled it reads as a control — occlude so double-clicks
-            // on it don't fall through to the titlebar strip's zoom handler.
             .occlude()
             .child(
                 icon(icon_path)
@@ -6253,8 +5351,6 @@ fn nav_history_button(
     window_control_button(id, icon_path, theme, on_click).into_any_element()
 }
 
-/// A size-7 icon button for the main-panel header (zeron __root.tsx:
-/// `grid size-7 place-items-center rounded-md text-muted-foreground`).
 fn header_icon_button(
     id: &'static str,
     icon_path: &'static str,
@@ -6272,16 +5368,12 @@ fn header_icon_button(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        // zeron __root.tsx header buttons: `transition-colors`.
         .bg(motion::hover_blend(
             &fade_key,
             crate::theme::wash(0.0),
             crate::theme::wash(0.11),
         ))
         .on_hover(motion::hover_listener(fade_key))
-        // Same occlusion + click-swallowing as [`window_control_button`]: this
-        // button sits inside the chat header's titlebar drag region, so its
-        // rect must be carved out of the strip's drag/double-click surface.
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
@@ -6294,9 +5386,6 @@ fn header_icon_button(
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
-        // The shell uses two explicit opaque dark planes: the near-black
-        // sidebar and the charcoal conversation surface. This keeps desktop
-        // content from bleeding through the local workspace.
         let (frost, text, font, content_bg, sidebar_bg) = (
             theme.glass(),
             theme.text,
@@ -6315,9 +5404,6 @@ impl Render for Shell {
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
 
-        // Fullscreen hides the macOS traffic lights — reflow the control
-        // cluster with a 200ms ease-out tween (§1.1). A fullscreen transition
-        // resizes the window, which re-renders us, so polling here is exact.
         let fullscreen = window.is_fullscreen();
         if self.fullscreen != Some(fullscreen) {
             if self.fullscreen.is_some() && cfg!(target_os = "macos") {
@@ -6328,33 +5414,22 @@ impl Render for Shell {
             }
             self.fullscreen = Some(fullscreen);
         }
-        // Linux CSD: (re-)resolve which caption buttons we draw and on which
-        // side — decorations can flip server↔client at runtime and the
-        // desktop's button layout is user configuration.
         self.linux_captions = Self::resolve_linux_captions(window, cx);
         if cfg!(target_os = "linux") && self.button_layout_sub.is_none() {
             self.button_layout_sub =
                 Some(cx.observe_button_layout_changed(window, |_, _, cx| cx.notify()));
         }
-        // Manual tween drive bookkeeping for this pass (see [`WidthTween`]).
         self.reduced_motion = motion::reduced_motion(cx);
         self.motion_active.set(false);
 
-        // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
-        // chain — with nothing focused they go dead. Land initial focus on the
-        // composer, and whenever focus is lost with no successor (e.g. the
-        // focused element unmounted), route it back there.
         if self.focus_sub.is_none() {
-            self.focus_sub = Some(cx.on_focus_lost(window, |this: &mut Shell, window, cx| {
-                match this.route {
-                    Route::Chat => window.focus(&this.composer.focus_handle(cx), cx),
-                    // No composer here — clear the stale handle so `focused()`
-                    // reads None (the render hook below re-lands focus when the
-                    // route returns to Chat; a lingering unmounted handle would
-                    // otherwise dead-end keyboard dispatch for good).
-                    Route::Settings(_) => window.blur(),
-                }
-            }));
+            self.focus_sub =
+                Some(
+                    cx.on_focus_lost(window, |this: &mut Shell, window, cx| match this.route {
+                        Route::Chat => window.focus(&this.composer.focus_handle(cx), cx),
+                        Route::Settings(_) => window.blur(),
+                    }),
+                );
         }
         if !restart_required
             && matches!(gate, GatePhase::Ready)
@@ -6377,18 +5452,12 @@ impl Render for Shell {
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
-            // The panel shortcuts are chat-scoped chrome: in Settings they are
-            // no-ops (zeron __root.tsx gates the hotkey on `!isSettings`, and
-            // the terminal panel is only mounted on session routes). The
-            // sidebar toggle stays live everywhere, as in the original.
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
                 if matches!(this.route, Route::Chat) {
                     this.toggle_terminal(window, cx)
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
-            // New session works from anywhere — `open_new_session` routes back
-            // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))
             .on_action(cx.listener(|this, _: &ToggleChanges, _, cx| {
                 if matches!(this.route, Route::Chat) {
@@ -6411,21 +5480,11 @@ impl Render for Shell {
         };
         let root = match &render_gate {
             GatePhase::Ready => {
-                // Focus is a sync signal: on the rising edge of window
-                // activation, nudge every open room to verify liveness — a
-                // broadcast-deaf socket (accepted writes, runtime pongs,
-                // nothing delivered; 2026-08-04 incident) then heals within
-                // seconds of the user looking at the app rather than waiting
-                // out the background probe cadence.
                 let window_active = window.is_window_active();
                 if window_active && !self.was_window_active {
                     self.state.update(cx, |s, cx| s.probe_sync(cx));
                 }
                 self.was_window_active = window_active;
-                // A run finishing while you're LOOKING at the session must not
-                // badge "completed" until you leave and return — mark it seen
-                // live while the window is active (idempotent guard inside;
-                // one extra frame settles it).
                 if window_active {
                     let unseen_selected = {
                         let s = self.state.read(cx);
@@ -6438,24 +5497,15 @@ impl Render for Shell {
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
                 }
-                // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
-                // harness/model menu (needs `window`, so it fires here rather
-                // than in `on_state_changed`).
                 if self.debug_dialog.as_deref() == Some("model") {
                     self.debug_dialog = None;
                     self.composer
                         .update(cx, |c, cx| c.debug_open_model_menu(window, cx));
                 }
-                // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);
-                // Stamped for `right_target` — the expanded changes panel
-                // sizes itself to the viewport.
                 self.viewport_width = viewport;
                 let main_width =
                     (viewport - self.sidebar_target() - self.right_target(cx) - 10.0).max(0.0);
-                // Clearance excludes the terminal dock: the transcript
-                // viewport ends at the dock's top (see the underlay in
-                // `render_main`), so only the chrome above it overlaps.
                 let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
                 let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
                 self.transcript.update(cx, |t, cx| {
@@ -6471,10 +5521,6 @@ impl Render for Shell {
                     cx,
                 );
                 let main = self.render_main(cx);
-                // The Changes pane is chat-scoped chrome: the Settings route
-                // never renders it (zeron __root.tsx `!isSettings && activeChat`
-                // around the diff column) — the per-session open flags stay
-                // intact for the return trip.
                 let on_chat = matches!(self.route, Route::Chat);
                 let right: AnyElement = if on_chat {
                     self.render_right_pane(cx)
@@ -6482,11 +5528,7 @@ impl Render for Shell {
                     Empty.into_any_element()
                 };
                 let overlays = self.render_overlays(window.viewport_size(), window, cx);
-                // Copied out (not held) — `render_title_bar` needs `cx` mutable.
                 let border_color = Theme::of(cx).border;
-                // No inset cards (user request): the conversation column sits
-                // flush and unbordered on the charcoal content plane; the
-                // changes pane is a flush left-bordered panel.
                 let card: AnyElement = div()
                     .flex_1()
                     .min_w_0()
@@ -6496,13 +5538,6 @@ impl Render for Shell {
                     .overflow_hidden()
                     .child(main)
                     .into_any_element();
-                // The whole app page is one keyed `animate-in` entrance (zeron
-                // App.tsx `<div key={phase} className="animate-in h-full">`):
-                // arriving from a gate fades the page in.
-                // The sidebar resize handle FLOATS over the sidebar/card seam
-                // (zero layout width, same idiom as the changes-pane grabber)
-                // so the sidebar's right gutter stays exactly as wide as its
-                // left one — a 5px flex child here read as lopsided spacing.
                 let sidebar_seam = div()
                     .w(px(0.0))
                     .h_full()
@@ -6510,14 +5545,7 @@ impl Render for Shell {
                     .relative()
                     .child(sidebar_handle.absolute().top_0().bottom_0().left(px(-2.0)));
                 let title_bar = self.render_title_bar(cx);
-                // Sidebar tone: the darker opaque column behind the sidebar,
-                // spanning the FULL window height (under the traffic lights,
-                // through the titlebar, down to the bottom edge). Its width
-                // rides the same tween as the sidebar, so the tone melts away
-                // with the collapse instead of vanishing in a frame.
                 let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-                // Hairline on its right edge — full height like the tone,
-                // so the sidebar column reads as its own surface.
                 let sidebar_tone = div()
                     .absolute()
                     .top_0()
@@ -6527,11 +5555,6 @@ impl Render for Shell {
                     .bg(sidebar_bg)
                     .border_r_1()
                     .border_color(border_color);
-                // The content row spans the FULL window height — the titlebar
-                // overlays it without changing the content plane, so the transcript can scroll
-                // under the header and fade out at its edge. Columns that
-                // must NOT underlap (sidebar content, the changes panel,
-                // settings) pad themselves down by the titlebar height.
                 let page = div()
                     .size_full()
                     .relative()
@@ -6568,21 +5591,10 @@ impl Render for Shell {
             root
         };
 
-        // A manually-driven tween is mid-flight: keep frames coming (the same
-        // scheduling `with_animation` would have requested). Hover color fades
-        // ride the same clock; their once-per-frame tick lives here (this is
-        // the window's root render — it runs exactly once per frame).
         if self.motion_active.get() | motion::hover_fades_active() {
             window.request_animation_frame();
         }
 
-        // Caption controls are shell-level chrome, not Ready-page content:
-        // keep them above the splash and every auth/org/error gate as well as
-        // the full application. Gate pages also need a drag surface because
-        // they do not render the unified tabs/settings titlebar — on Windows
-        // the native `Drag` control area, on Linux the explicit
-        // `start_window_move` strip (the control-area hit-test is inert
-        // there); macOS drags gate windows natively.
         let root = if (!restart_required && matches!(gate, GatePhase::Ready))
             || cfg!(target_os = "macos")
         {
@@ -6606,7 +5618,6 @@ impl Render for Shell {
     }
 }
 
-// The pre-local-only shell suite covered cloud account and sync lifecycle UI.
 #[cfg(any())]
 mod tests {
     use super::*;
@@ -6786,14 +5797,11 @@ mod tests {
 
     #[test]
     fn import_summary_errors_are_a_failure_not_a_success() {
-        // Clean summary → done with counts.
         let clean = serde_json::json!({
             "kind": "summary", "importedChats": 2, "skippedChats": 1, "errors": []
         });
         assert_eq!(import_summary_outcome(&clean), Ok((2, 1)));
 
-        // Any error means the wizard must NOT say "all set" — partial
-        // migrations surface as an explicit failure with the first cause.
         let partial = serde_json::json!({
             "kind": "summary", "importedChats": 1, "skippedChats": 0,
             "errors": ["chat c2: journal copy failed"]
@@ -6809,8 +5817,6 @@ mod tests {
         let message = import_summary_outcome(&many).expect_err("errors must fail");
         assert!(message.contains("3 failures"), "{message}");
 
-        // A summary missing the errors field entirely (older engine) is
-        // treated as clean rather than failing every import.
         let legacy = serde_json::json!({ "kind": "summary", "importedChats": 4 });
         assert_eq!(import_summary_outcome(&legacy), Ok((4, 0)));
     }
@@ -6841,7 +5847,6 @@ mod tests {
             org_id: Some("org-1".into()),
         };
 
-        // "Later" postpones the failure notice; it must not evaporate.
         let dismissed = SyncFlow::ImportFailed { notice_open: false };
         assert_eq!(
             sync_flow_after_auth(dismissed, Some(WorkspaceScope::Synced), Some(&signed_in)),
@@ -6849,10 +5854,6 @@ mod tests {
             "a postponed import failure survives auth/scope updates"
         );
 
-        // …and the account menu on the SYNCED runtime still exposes the
-        // re-entry point. This is the whole point: after the switch there is
-        // no local runtime left to re-derive an offer from, so this menu row
-        // is the only path back to the retry dialog.
         assert_eq!(
             account_menu_action(Some(WorkspaceScope::Synced), dismissed),
             Some(AccountMenuAction::RestartPending),
@@ -6866,7 +5867,6 @@ mod tests {
             Some(AccountMenuAction::RestartPending)
         );
 
-        // Resolving the failure restores the normal synced menu.
         assert_eq!(
             account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle),
             Some(AccountMenuAction::SignOut)
@@ -6893,9 +5893,6 @@ mod tests {
             SyncFlow::ImportFailed { notice_open: true },
             SyncFlow::ImportFailed { notice_open: false },
         ] {
-            // Local (before the stop), detached (mid-replacement), and synced
-            // (replacement runtime up): the driver owns these states — auth
-            // and scope edges must never reset them.
             assert_eq!(
                 sync_flow_after_auth(flow, Some(WorkspaceScope::Local), Some(&signed_in)),
                 flow
@@ -6950,24 +5947,17 @@ mod tests {
 
     #[test]
     fn titlebar_cluster_matches_zeron_window_controls() {
-        // zeron window-controls.tsx: `left: fullscreen ? 12 : 88` — the
-        // cluster clears the {14,15} traffic lights, and reclaims the inset
-        // when fullscreen hides them.
         assert_eq!(titlebar_cluster_start(false), 88.0);
         assert_eq!(titlebar_cluster_start(true), 12.0);
     }
 
     #[test]
     fn titlebar_spacer_selects_per_platform_and_fullscreen() {
-        // macOS, lights visible: spacer fills up to the 88px cluster start.
         assert_eq!(titlebar_spacer_width(true, false, 10.0), 78.0);
         assert_eq!(titlebar_spacer_width(true, false, 12.0), 76.0);
         assert_eq!(titlebar_spacer_width(true, false, 26.0), 62.0);
-        // macOS fullscreen: the inset animates away (clamped at zero when the
-        // strip's own padding already exceeds the 12px cluster start).
         assert_eq!(titlebar_spacer_width(true, true, 10.0), 2.0);
         assert_eq!(titlebar_spacer_width(true, true, 26.0), 0.0);
-        // Linux / Windows: never any inset.
         assert_eq!(titlebar_spacer_width(false, false, 10.0), 0.0);
         assert_eq!(titlebar_spacer_width(false, true, 10.0), 0.0);
     }
@@ -6980,75 +5970,54 @@ mod tests {
 
     #[test]
     fn linux_caption_controls_reserve_titlebar_space() {
-        // 24px buttons on the cluster's 2px rhythm.
         assert_eq!(caption_buttons_width(0), 0.0);
         assert_eq!(caption_buttons_width(1), 24.0);
         assert_eq!(caption_buttons_width(3), 76.0);
-        // Right-side captions (the Linux default: minimize,maximize,close):
-        // content pads past the 10px edge inset + the button row.
         assert_eq!(titlebar_right_padding(false, 3, 16.0), 16.0 + 10.0 + 76.0);
-        // GNOME-vanilla ":close" — a single right button.
         assert_eq!(titlebar_right_padding(false, 1, 16.0), 16.0 + 10.0 + 24.0);
-        // Left-side captions ("close:…" layouts) shift the app cluster right
-        // by the button row + one 2px gap.
         assert_eq!(cluster_buttons_start(false, false, 0), 10.0);
         assert_eq!(cluster_buttons_start(false, false, 1), 10.0 + 24.0 + 2.0);
         assert_eq!(cluster_buttons_start(false, false, 3), 10.0 + 76.0 + 2.0);
-        // macOS ignores the Linux caption count entirely.
         assert_eq!(cluster_buttons_start(true, false, 3), 88.0);
     }
 
     #[test]
     fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..86; a 16px-padded header needs 78 more px to
-        // put content at 86 + 8 breathing room.
         assert_eq!(cluster_clearance(false, false, 0, 16.0), 78.0);
         assert_eq!(cluster_clearance(false, false, 0, 10.0), 84.0);
-        // Linux with a left-side close caption: everything shifts one slot.
         assert_eq!(cluster_clearance(false, false, 1, 16.0), 78.0 + 26.0);
-        // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
             cluster_clearance(true, false, 0, 16.0),
             88.0 + 76.0 + 8.0 - 16.0
         );
-        // macOS fullscreen: cluster reclaims the inset (starts at 12).
         assert_eq!(
             cluster_clearance(true, true, 0, 16.0),
             12.0 + 76.0 + 8.0 - 16.0
         );
     }
 
-    // ---- per-session panel flags (§1.10/1.11 parity: zeron sessionPanels) ----
-
     #[test]
     fn session_panels_default_closed_per_chat() {
         let panels = SessionPanels::default();
         assert_eq!(panels.get("a"), ChatPanels::default());
-        // Everything closed until explicitly opened (user request — the
-        // brief default-open popped the pane on every visited session).
         assert!(!panels.get("a").terminal_open);
         assert!(!panels.get("a").changes_open);
         assert_eq!(panels.get("a").right_active, RightSurface::Picker);
-        // The new-chat canvas ("" key) is its own session, also closed.
         assert!(!panels.get("").terminal_open);
     }
 
     #[test]
     fn session_panels_flags_are_chat_scoped() {
         let mut panels = SessionPanels::default();
-        // Opening the terminal in chat A opens it ONLY in chat A.
         assert!(panels.toggle_terminal("a"));
         assert!(panels.get("a").terminal_open);
         assert!(!panels.get("b").terminal_open);
         assert!(!panels.get("").terminal_open);
-        // Changes pane in B is independent of A's terminal.
         assert!(panels.toggle_changes("b"));
         assert!(panels.get("b").changes_open);
         assert!(!panels.get("b").terminal_open);
         assert!(!panels.get("a").changes_open);
-        // Switching back to A restores A's state untouched.
         assert!(panels.get("a").terminal_open);
-        // Toggling off round-trips.
         assert!(!panels.toggle_terminal("a"));
         assert!(!panels.get("a").terminal_open);
     }
@@ -7067,7 +6036,6 @@ mod tests {
             }
         );
         assert_eq!(panels.get("b"), ChatPanels::default());
-        // The right pane round-trips back closed.
         assert!(!panels.toggle_changes("a"));
         assert!(!panels.get("a").changes_open);
     }
@@ -7077,13 +6045,10 @@ mod tests {
         let mut panels = SessionPanels::default();
         panels.update("a", |p| p.right_active = RightSurface::Diff(3));
         assert_eq!(panels.get("a").right_active, RightSurface::Diff(3));
-        // Other chats keep the picker default.
         assert_eq!(panels.get("b").right_active, RightSurface::Picker);
         panels.update("a", |p| p.right_active = RightSurface::Terminal(7));
         assert_eq!(panels.get("a").right_active, RightSurface::Terminal(7));
     }
-
-    // ---- sidebar resort FLIP diff (§1.6) ----
 
     fn keys(list: &[(&str, f32)]) -> Vec<(String, f32)> {
         list.iter().map(|(k, h)| (k.to_string(), *h)).collect()
@@ -7097,10 +6062,6 @@ mod tests {
 
     #[test]
     fn resort_offsets_activity_moves_row_to_top() {
-        // c (bottom, y=62) jumps to top: c glides down-from-above? No — c's
-        // old y is 62, new y is 0 → starts +62 below… offset = old - new = +62,
-        // painted at +62 decaying to 0 (a glide UP into place). a and b shift
-        // down by c's height + gap (31).
         let old = keys(&[("a", 29.0), ("b", 29.0), ("c", 29.0)]);
         let new = keys(&[("c", 29.0), ("a", 29.0), ("b", 29.0)]);
         let offsets = resort_offsets(&old, &new, 2.0);
@@ -7111,11 +6072,9 @@ mod tests {
 
     #[test]
     fn resort_offsets_respect_heights_and_gap() {
-        // Tall row (45px) swaps with a short one (29px).
         let old = keys(&[("tall", 45.0), ("short", 29.0)]);
         let new = keys(&[("short", 29.0), ("tall", 45.0)]);
         let offsets = resort_offsets(&old, &new, 2.0);
-        // short: old y 47 → new y 0; tall: old y 0 → new y 31.
         assert_eq!(offsets.get("short"), Some(&47.0));
         assert_eq!(offsets.get("tall"), Some(&-31.0));
     }
@@ -7125,23 +6084,17 @@ mod tests {
         let old = keys(&[("a", 29.0), ("gone", 29.0), ("b", 29.0)]);
         let new = keys(&[("new", 29.0), ("a", 29.0), ("b", 29.0)]);
         let offsets = resort_offsets(&old, &new, 2.0);
-        // "new" has no old position (fades in instead); "gone" just goes.
         assert!(!offsets.contains_key("new"));
         assert!(!offsets.contains_key("gone"));
-        // a: old 0 → new 31 (pushed down by the insert); b: 62 → 62 (gone's
-        // slot replaced by "new" of equal height — no move, no entry).
         assert_eq!(offsets.get("a"), Some(&-31.0));
         assert_eq!(offsets.get("b"), None);
     }
 
     #[test]
     fn resort_glide_spec_matches_original() {
-        // §1.6: 260ms cubic-bezier(0.22, 1, 0.36, 1).
         assert_eq!(RESORT.duration_ms, 260);
         assert_eq!(RESORT.curve, motion::EASE_RESORT);
     }
-
-    // ---- navigation history (titlebar back/forward) ----
 
     fn chat(id: &str) -> NavEntry {
         NavEntry::Chat(id.to_string())
@@ -7163,7 +6116,6 @@ mod tests {
         assert!(nav.can_back());
         assert!(!nav.can_forward());
 
-        // Back walks toward the oldest entry without dropping anything.
         assert_eq!(
             nav.back(),
             Some(chat("b")),
@@ -7174,7 +6126,6 @@ mod tests {
         assert!(nav.can_forward());
         assert_eq!(nav.back(), None, "past the oldest entry is a no-op");
 
-        // Forward retraces the same path.
         assert_eq!(nav.forward(), Some(chat("b")));
         assert_eq!(
             nav.forward(),
@@ -7197,8 +6148,6 @@ mod tests {
 
     #[test]
     fn nav_push_truncates_the_forward_branch() {
-        // a → b → c, back to a, then push d: the b/c branch is gone (browser
-        // semantics — zeron's memory history PUSH truncates entries ahead).
         let mut nav = NavHistory::new(chat("a"));
         nav.push(chat("b"));
         nav.push(chat("c"));
@@ -7215,8 +6164,6 @@ mod tests {
 
     #[test]
     fn nav_replace_swaps_in_place() {
-        // The boot auto-select replaces the untouched canvas entry, so Back
-        // stays disabled after landing in the last-used chat.
         let mut nav = NavHistory::new(chat(""));
         nav.replace(chat("boot"));
         assert_eq!(nav.len(), 1);

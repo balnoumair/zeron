@@ -1,21 +1,7 @@
-//! Viewport derivations: sort orders, sidebar grouping, the boot gate,
-//! relative times, and tool-chip/summary text.
-//!
-//! These answer "what should the screen show" and belong to the viewport, not
-//! to the backend. They live in one module rather than at their call sites so
-//! a rule has exactly one implementation and one test suite — the same
-//! workspace doc must produce the same row order everywhere it is rendered.
-//!
-//! Everything here is pure. The staleness rule these gate on
-//! ([`zeron_proto::effective_indicator`] and [`zeron_proto::SESSION_STALE_MS`])
-//! stays in the backend crate, because the engine and the harnesses enforce it
-//! too.
-
 use chrono::{DateTime, Utc};
 
 use zeron_proto::{AuthState, Chat, ChatIndicator, Space, WorkspaceScope};
 
-/// Viewport ⇄ engine connection lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -23,7 +9,6 @@ pub enum ConnectionStatus {
     Failed(String),
 }
 
-/// Attention bucket for the sidebar's Active list — lower is more urgent.
 pub fn attention_rank(status: ChatIndicator) -> u8 {
     match status {
         ChatIndicator::AwaitingInput => 0,
@@ -34,18 +19,6 @@ pub fn attention_rank(status: ChatIndicator) -> u8 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sort orders
-// ---------------------------------------------------------------------------
-
-/// Active-list order: pure recency (`last_message_at` desc, `created_at`
-/// fallback), id tiebreak so the sort is total. Deliberately NOT
-/// attention-bucketed: status drives the DOT, never the position — bucketing
-/// meant that merely OPENING a completed session (completed → seen → idle)
-/// dropped its row under the pointer (user report: "their position in the
-/// scrollbar changes"). Matches the old sidebar, which rendered chats in
-/// recency order and let the dots carry urgency; [`attention_rank`] still
-/// aggregates the space rows' urgency dot.
 pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
     rows.sort_by(|(_, a), (_, b)| {
         let ka = a.last_message_at.unwrap_or(a.created_at);
@@ -54,8 +27,6 @@ pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
     });
 }
 
-/// Session-tab order for a space: creation order (activity never reorders
-/// tabs), id tiebreak. Pure.
 pub fn sort_tabs(chats: &mut [&Chat]) {
     chats.sort_by(|a, b| {
         a.created_at
@@ -64,8 +35,6 @@ pub fn sort_tabs(chats: &mut [&Chat]) {
     });
 }
 
-/// Spaces list order: creation order, id tiebreak — total and stable across
-/// devices. Pure.
 pub fn sort_spaces(spaces: &mut [Space]) {
     spaces.sort_by(|a, b| {
         a.created_at
@@ -74,9 +43,6 @@ pub fn sort_spaces(spaces: &mut [Space]) {
     });
 }
 
-/// Sidebar order: `last_message_at` desc, falling back to `created_at`; ties
-/// break by `created_at` desc then id so the sort is total and stable across
-/// devices. Pure.
 pub fn sort_chats(chats: &mut [Chat]) {
     chats.sort_by(|a, b| {
         let ka = a.last_message_at.unwrap_or(a.created_at);
@@ -87,28 +53,15 @@ pub fn sort_chats(chats: &mut [Chat]) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Boot gate
-// ---------------------------------------------------------------------------
-
-/// The app gate (zeron's App.tsx phases). Pure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatePhase {
-    /// Booting / probing — the main view is not ready yet.
     Loading,
-    /// Engine unreachable and embedding failed.
     Failed(String),
-    /// Engine up, but signed out — show the sign-in card.
     SignIn,
-    /// Signed in but no organization selected — "Create your workspace".
     OrgGate,
-    /// Render the shell.
     Ready,
 }
 
-/// Missing scope is treated as synced. Current engines always publish
-/// [`WorkspaceScope`] before becoming ready, while old daemons are deliberately
-/// kept behind the account gate instead of being mistaken for local runtimes.
 pub fn gate_phase(
     connection: &ConnectionStatus,
     workspace_scope: Option<WorkspaceScope>,
@@ -197,10 +150,6 @@ mod gate_tests {
     }
 }
 
-/// Parse an `AuthStatus` frame tolerantly. The engine currently serializes its
-/// own enum (`{"_tag": "SignedIn", ...}`) while the proto type expects
-/// `{"state": "signedIn", ...}` — accept both so either side can converge
-/// without breaking a viewport.
 pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
     if let Ok(state) = serde_json::from_value::<AuthState>(value.clone()) {
         return Some(state);
@@ -228,18 +177,12 @@ pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar grouping
-// ---------------------------------------------------------------------------
-
-/// One grouped-by-project sidebar section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatGroup<'a> {
     pub label: String,
     pub chats: Vec<&'a Chat>,
 }
 
-/// Project label for a chat: the basename of its cwd, or "No project".
 pub fn project_label(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
         return "No project".to_string();
@@ -251,8 +194,6 @@ pub fn project_label(cwd: Option<&str>) -> String {
         .unwrap_or_else(|| cwd.to_string())
 }
 
-/// Group chats by project label, preserving the incoming (recency) order both
-/// for groups (by their most recent chat) and rows within a group. Pure.
 pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGroup<'a>> {
     let mut groups: Vec<ChatGroup<'a>> = Vec::new();
     for chat in chats {
@@ -268,11 +209,8 @@ pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGro
     groups
 }
 
-/// Compact relative time ("now", "5m", "3h", "2d", "1w", …) — no "ago" suffix;
-/// port of zeron's `formatTimeAgo`.
 pub fn format_time_ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = now.signed_duration_since(then).num_seconds().max(0);
-    // Under a minute reads as "now" — otherwise 45–59s floors to a bare "0m".
     if s < 60 {
         return "now".to_string();
     }
@@ -299,8 +237,6 @@ pub fn format_time_ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     format!("{}y", d / 365)
 }
 
-/// Session-row sub-line, "project · branch" (zeron `chatLocation`): the repo
-/// checkout identity. Either part may be missing; empty when both are.
 pub fn chat_location(chat: &Chat) -> Option<String> {
     let project = chat
         .cwd
@@ -321,17 +257,6 @@ pub fn chat_location(chat: &Chat) -> Option<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool summaries (pure)
-// ---------------------------------------------------------------------------
-
-/// Collapse model-generated text onto ONE line for single-line surfaces (tool
-/// chips, titles, previews): newlines, tabs and runs of whitespace become
-/// single spaces, trimmed.
-///
-/// Both viewports need this for the same reason from opposite directions — gpui
-/// breaks on a literal `\n` before its ellipsis logic, and a terminal cell grid
-/// would take an embedded newline as a cursor move.
 pub fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -344,8 +269,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// Per-kind chip label + one-line detail. Labels match zeron's `describeTool`
-/// (tool-chip.tsx) exactly, so the two viewports name a tool identically.
 pub fn tool_chip_content(call: &zeron_proto::ToolCall) -> (&'static str, String) {
     let (label, detail) = tool_chip_content_raw(call);
     (label, single_line(&detail))
@@ -376,10 +299,6 @@ fn tool_chip_content_raw(call: &zeron_proto::ToolCall) -> (&'static str, String)
             ("Todo", format!("{done}/{} done", items.len()))
         }
         ToolCall::Mcp { server, tool, .. } => ("MCP", format!("{server} · {tool}")),
-        // Subagent spawns decode as Unknown named "Agent[: <description>]"
-        // (every native driver's convention): label them "Agent" with the
-        // description as the detail — "Tool · Agent: scan repo" read as two
-        // labels fighting.
         ToolCall::Unknown { name, .. } => match name.strip_prefix("Agent: ") {
             Some(description) => ("Agent", description.to_owned()),
             None if name == "Agent" => ("Agent", String::new()),
@@ -388,10 +307,6 @@ fn tool_chip_content_raw(call: &zeron_proto::ToolCall) -> (&'static str, String)
     }
 }
 
-/// The ToolGroup summary line — "Ran 3 commands · edited 2 files".
-///
-/// Takes `(call, is_error)` pairs so each viewport can keep its own row model;
-/// the summary itself is one implementation for both.
 pub fn tool_group_summary(tools: &[(zeron_proto::ToolCall, bool)]) -> String {
     use zeron_proto::ToolCall;
     let mut commands = 0usize;
@@ -457,7 +372,6 @@ pub fn tool_group_summary(tools: &[(zeron_proto::ToolCall, bool)]) -> String {
         segments.push(format!("{failed} failed"));
     }
     let mut summary = segments.join(" · ");
-    // Capitalize the first segment only (zeron's style).
     if let Some(first) = summary.get(0..1) {
         let upper = first.to_uppercase();
         summary.replace_range(0..1, &upper);
@@ -465,19 +379,9 @@ pub fn tool_group_summary(tools: &[(zeron_proto::ToolCall, bool)]) -> String {
     summary
 }
 
-/// The status-dot palette, as oklch triples (L, C, H°).
-///
-/// Colors live here rather than in the viewport because the *meaning* of a
-/// dot is part of the protocol, not the presentation — a given status must
-/// read the same on every surface. `zeron-ui` has the oklch→sRGB math.
 pub mod dot {
-    /// Running. Pink, not amber: the harsh yellow read as a warning, and running
-    /// is routine (user request).
     pub const WORKING: (f32, f32, f32) = (0.718, 0.202, 349.761);
-    /// Asking a question. Indigo — must read differently from "busy" at a glance.
     pub const AWAITING: (f32, f32, f32) = (0.673, 0.182, 276.935);
-    /// Errored. Red-400.
     pub const ERRORED: (f32, f32, f32) = (0.704, 0.191, 22.216);
-    /// Finished but unseen. Emerald — reads as "ready for you".
     pub const COMPLETED: (f32, f32, f32) = (0.765, 0.177, 163.223);
 }

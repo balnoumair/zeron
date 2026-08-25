@@ -1,13 +1,7 @@
-//! Shared scaffolding for the settings pages — the original's page rhythm
-//! (`mx-auto max-w-3xl px-6 pb-16 pt-8`), section cards, row layout, badges
-//! and small buttons, so every page reads as the same product surface
-//! (zeron settings.devices.tsx / settings.agents.tsx / settings.archived.tsx).
-
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
 
 use crate::theme::{Theme, ink};
 
-/// Centered page column: `mx-auto w-full max-w-3xl px-6 pb-16 pt-8`.
 pub fn page_column() -> gpui::Div {
     div()
         .w_full()
@@ -20,8 +14,6 @@ pub fn page_column() -> gpui::Div {
         .flex_col()
 }
 
-/// Page headline row: `flex items-baseline gap-2.5` — `text-base font-semibold`
-/// title + `text-[13px]` count sharing a baseline (zeron settings.devices.tsx).
 pub fn page_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
     div()
         .flex()
@@ -45,7 +37,6 @@ pub fn page_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Di
         })
 }
 
-/// Subtitle under the headline: `mt-1 text-[13px] text-muted-foreground`.
 pub fn page_subtitle(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Div {
     div()
         .mt(px(4.0))
@@ -54,8 +45,6 @@ pub fn page_subtitle(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Div 
         .child(copy.into())
 }
 
-/// Small label above a group of controls (`text-[13px] font-medium`) — the
-/// "Theme" caption over a picker, not a page headline.
 pub fn field_label(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(13.0))
@@ -64,39 +53,15 @@ pub fn field_label(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
         .child(label.into())
 }
 
-/// A row of equally-sized preview cards for picking one of N *visual* options.
-///
-/// Deliberately knows nothing about themes: the caller supplies each preview as
-/// an arbitrary element and picks however many cards it wants, so the same
-/// control works for a density picker, a layout picker or anything else where
-/// the choice is easier to show than to describe. Pair with [`option_card`].
 pub fn option_card_row() -> gpui::Div {
     div().flex().flex_row().items_start().gap(px(16.0)).w_full()
 }
 
-/// Default height of an [`option_card`] preview frame.
 pub const OPTION_CARD_HEIGHT: f32 = 148.0;
-/// Corner radius of the preview frame.
-///
-/// Public because the preview has to round *itself* to this. gpui content masks
-/// are axis-aligned rectangles, so `overflow_hidden` on the frame clips to its
-/// bounding box and not to its corner radius — a preview that paints its own
-/// background will square off the corners and cover the frame's border with it.
 pub const OPTION_CARD_RADIUS: f32 = 10.0;
-/// Clear space between the frame and the selection ring.
 const RING_GAP: f32 = 2.0;
-/// Thickness of the selection ring.
 const RING_WIDTH: f32 = 2.0;
 
-/// One card in an [`option_card_row`]: a fixed-height preview frame that carries
-/// the selection ring, with a caption underneath.
-///
-/// `preview` fills the frame and **must round its own corners** to
-/// [`OPTION_CARD_RADIUS`] if it paints a background — see that constant.
-///
-/// Returns a plain `Div` like the rest of this module — the caller adds `.id(..)`
-/// and `.on_click(..)`, so selection behaviour stays with the page that owns the
-/// state.
 pub fn option_card(
     theme: &Theme,
     label: impl Into<SharedString>,
@@ -112,13 +77,6 @@ pub fn option_card(
         .border_color(theme.border)
         .child(preview);
 
-    // The ring is a *wrapper border*, not a spread shadow. A shadow's spread
-    // grows the rectangle without growing its corner radius, so the halo's
-    // corners tighten relative to the frame's and the two visibly drift apart by
-    // a pixel at each rounded corner. Concentric borders can't do that: each
-    // element rounds itself, and the outer radius is the inner one plus the gap
-    // it sits behind. Always present, transparent when unselected, so selecting a
-    // card never reflows the row.
     div()
         .flex_1()
         .min_w_0()
@@ -152,9 +110,6 @@ pub fn option_card(
         )
 }
 
-/// Section card: `mt-6 overflow-hidden rounded-xl border border-border bg-card`
-/// — the card tone, thinned to a translucent tint over glass so the card
-/// reads as frost instead of a solid slab ([`Theme::card_glass_bg`]).
 pub fn section_card(theme: &Theme) -> gpui::Div {
     div()
         .mt(px(24.0))
@@ -167,8 +122,6 @@ pub fn section_card(theme: &Theme) -> gpui::Div {
         .flex_col()
 }
 
-/// One card row: `border-t border-border px-5 py-3.5 first:border-t-0` with the
-/// quiet hover wash.
 pub fn card_row(theme: &Theme, first: bool) -> gpui::Div {
     div()
         .px(px(20.0))
@@ -181,8 +134,6 @@ pub fn card_row(theme: &Theme, first: bool) -> gpui::Div {
         .gap(px(14.0))
 }
 
-/// The identity tile on a row: `size-9 rounded-[10px] border bg-white/[0.03]`
-/// around a 16px icon.
 pub fn row_tile(theme: &Theme, icon_path: &'static str) -> gpui::Div {
     div()
         .flex_none()
@@ -201,7 +152,6 @@ pub fn row_tile(theme: &Theme, icon_path: &'static str) -> gpui::Div {
         )
 }
 
-/// Row title: `text-[13.5px] font-medium leading-tight`.
 pub fn row_title(theme: &Theme, title: impl Into<SharedString>) -> gpui::Div {
     div()
         .min_w_0()
@@ -212,8 +162,6 @@ pub fn row_title(theme: &Theme, title: impl Into<SharedString>) -> gpui::Div {
         .child(title.into())
 }
 
-/// The quiet meta line under a row title: `text-[11.5px]
-/// text-muted-foreground/65` fragments joined by dots.
 pub fn meta_line(theme: &Theme, fragments: Vec<AnyElement>) -> gpui::Div {
     let mut line = div()
         .mt(px(4.0))
@@ -240,7 +188,6 @@ pub fn meta_line(theme: &Theme, fragments: Vec<AnyElement>) -> gpui::Div {
     line
 }
 
-/// Right-anchored badge pill: `rounded-full border px-2 py-0.5 text-[10.5px]`.
 pub fn badge(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
     div()
         .flex_none()
@@ -254,11 +201,9 @@ pub fn badge(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
         .child(label.into())
 }
 
-/// Emerald status pill (the Accounts "Active" badge:
-/// `bg-emerald-400/[0.12] text-emerald-300/90`).
 pub fn badge_active(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
     let emerald = theme.success;
-    let emerald_text = theme.success_muted; // emerald-300
+    let emerald_text = theme.success_muted;
     div()
         .flex_none()
         .px(px(8.0))
@@ -270,9 +215,6 @@ pub fn badge_active(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div 
         .child(label.into())
 }
 
-/// Display-only toggle switch (zeron branch-picker.tsx `Toggle`): an 18×32
-/// pill whose knob slides right and track flips white when on. State is owned
-/// by the parent row — the caller adds `.id(..)` and `.on_click(..)`.
 pub fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
     div()
         .flex_none()
@@ -292,10 +234,6 @@ pub fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
         )
 }
 
-/// A small quiet ghost action (`rounded-lg px-2.5 py-1.5 text-[12px]
-/// text-muted-foreground`). Caller adds id + click + leading icon child AND
-/// its own `.hover(..)` — gpui panics on a second hover, and the pages vary
-/// it (reveal opacity, 4% vs 6% washes).
 pub fn ghost_action(theme: &Theme) -> gpui::Div {
     div()
         .flex()
@@ -310,18 +248,13 @@ pub fn ghost_action(theme: &Theme) -> gpui::Div {
         .cursor_pointer()
 }
 
-/// The default ghost-action hover wash (`hover:bg-white/[0.06]
-/// hover:text-foreground`).
 pub fn ghost_hover(theme: &Theme, s: gpui::StyleRefinement) -> gpui::StyleRefinement {
     s.bg(ink(0.06)).text_color(theme.text)
 }
 
-/// The dismissible red error strip (`flex items-start gap-2 rounded-xl border
-/// border-red-400/20 bg-red-400/[0.06] text-red-300/90` with a leading
-/// `DangerTriangle mt-0.5 size-4`).
 pub fn error_strip(theme: &Theme, message: impl Into<SharedString>) -> gpui::Div {
-    let red = theme.danger; // red-400
-    let red_text = theme.danger_muted; // red-300
+    let red = theme.danger;
+    let red_text = theme.danger_muted;
     div()
         .mt(px(16.0))
         .px(px(16.0))
@@ -346,12 +279,9 @@ pub fn error_strip(theme: &Theme, message: impl Into<SharedString>) -> gpui::Div
         .child(div().min_w_0().child(message.into()))
 }
 
-/// The amber warning strip (`flex items-start gap-2 border-amber-400/20
-/// bg-amber-400/[0.06] text-amber-200/90` with a leading `DangerTriangle
-/// mt-0.5 size-3.5`).
 pub fn warning_strip(theme: &Theme, message: impl Into<SharedString>) -> gpui::Div {
-    let amber = theme.warning; // amber-400
-    let amber_text = theme.warning_muted; // amber-200
+    let amber = theme.warning;
+    let amber_text = theme.warning_muted;
     div()
         .mt(px(8.0))
         .px(px(16.0))

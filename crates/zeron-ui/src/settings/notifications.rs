@@ -1,11 +1,3 @@
-//! Settings → Notifications: the session ping toggles — the completion/
-//! question chime and the desktop banner ride the same status transitions
-//! (`shell::on_state_changed`); this page flips their two `UiSettings` flags.
-//!
-//! The ShortcutsPage arrangement: the page holds a working copy, every flip
-//! emits [`NotificationsEvent::Changed`], and the shell persists it. Nothing
-//! here talks RPC — both flags are device-local UI settings.
-
 use gpui::{Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 
 use crate::icons;
@@ -14,7 +6,6 @@ use crate::theme::Theme;
 
 #[derive(Debug, Clone)]
 pub enum NotificationsEvent {
-    /// A toggle flipped — persist all three flags.
     Changed {
         sound: bool,
         desktop: bool,
@@ -121,8 +112,6 @@ impl Render for NotificationsPage {
                     ),
             )
             .child(
-                // Sub-option of the banner row: dimmed + inert while banners
-                // are off (the harnesses not-installed treatment).
                 widgets::card_row(&theme, false)
                     .when(!desktop, |el| el.opacity(0.55))
                     .child(widgets::row_tile(&theme, icons::MONITOR))

@@ -1,13 +1,3 @@
-//! Sticky composer defaults — the new-chat "remember my last picks" store
-//! (zeron parity: localStorage `zeron.composer.defaults:v1`, defaults.ts).
-//!
-//! A small JSON file beside `ui-settings.json` (that file is the shell's and
-//! is saved debounced from its own boot-time copy, so the composer keeps its
-//! own file rather than racing it): last harness, last model per harness
-//! (id + label, so the chip names the pick before the model list loads),
-//! and last reasoning level. Written synchronously on every pick (picks are
-//! rare); corrupt or missing files fall back to defaults.
-
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,9 +8,6 @@ use zeron_proto::{HarnessId, ReasoningLevel};
 
 const FILE_NAME: &str = "composer-defaults.json";
 
-/// Remembered model per harness — id plus display label, mirroring zeron's
-/// `modelByHarness` storing the full `Model` object "so the pill never flashes
-/// a raw id or 'Default'".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RememberedModel {
@@ -28,8 +15,6 @@ pub struct RememberedModel {
     pub label: String,
 }
 
-/// One starred model in the picker (t3code client-settings `favorites`,
-/// keyed `provider:model`) — harness + model id, insertion-ordered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FavoriteModel {
@@ -40,30 +25,17 @@ pub struct FavoriteModel {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ComposerDefaults {
-    /// Last harness picked on the new-chat canvas.
     pub harness: Option<HarnessId>,
-    /// Last model picked, per harness (restored on harness switch).
     pub model_by_harness: HashMap<HarnessId, RememberedModel>,
-    /// Last reasoning level picked (global, like zeron's `reasoning` key).
     pub reasoning: Option<ReasoningLevel>,
-    /// Every model label ever seen (id → label), fed from catalog loads.
-    /// The chip's fallback while a harness's list is still loading — a
-    /// session whose configured model differs from the remembered pick
-    /// would otherwise flash the raw id on switch.
     pub model_labels: HashMap<String, String>,
-    /// Last device picked for new sessions (the composer's device selector).
     pub device: Option<String>,
-    /// Last project picked for new sessions; `None` + `no_project` = the
-    /// remembered "Don't work in a project" state.
     pub project: Option<String>,
-    /// Remembered "Don't work in a project" opt-out.
     pub no_project: bool,
-    /// Starred models (the picker's favorites rail), in starring order.
     pub favorites: Vec<FavoriteModel>,
 }
 
 impl ComposerDefaults {
-    /// Load from `{data_dir}/composer-defaults.json`; defaults on any failure.
     pub fn load(data_dir: &Path) -> Self {
         match std::fs::read_to_string(Self::path(data_dir)) {
             Ok(text) => match serde_json::from_str::<ComposerDefaults>(&text) {
@@ -77,7 +49,6 @@ impl ComposerDefaults {
         }
     }
 
-    /// Write atomically (temp file + rename) so a crash mid-write never corrupts.
     pub fn save(&self, data_dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(data_dir)?;
         let path = Self::path(data_dir);
@@ -92,31 +63,26 @@ impl ComposerDefaults {
         data_dir.join(FILE_NAME)
     }
 
-    /// The remembered model for a harness, if any.
     pub fn model_for(&self, harness: HarnessId) -> Option<&RememberedModel> {
         self.model_by_harness.get(&harness)
     }
 
-    /// Remember a pick (zeron `saveDefaults({ harness, modelByHarness })`).
     pub fn remember_model(&mut self, harness: HarnessId, id: String, label: String) {
         self.harness = Some(harness);
         self.model_by_harness
             .insert(harness, RememberedModel { id, label });
     }
 
-    /// The cached display label for a model id, if ever seen.
     pub fn label_for(&self, id: &str) -> Option<&str> {
         self.model_labels.get(id).map(String::as_str)
     }
 
-    /// Whether a model is starred.
     pub fn is_favorite(&self, harness: HarnessId, model: &str) -> bool {
         self.favorites
             .iter()
             .any(|f| f.harness == harness && f.model == model)
     }
 
-    /// Star/unstar a model; returns whether it is starred AFTER the toggle.
     pub fn toggle_favorite(&mut self, harness: HarnessId, model: &str) -> bool {
         if let Some(at) = self
             .favorites
@@ -134,8 +100,6 @@ impl ComposerDefaults {
         }
     }
 
-    /// Merge a loaded catalog into the label cache. Returns whether anything
-    /// changed (callers only save when it did).
     pub fn remember_labels<'a>(
         &mut self,
         models: impl Iterator<Item = (&'a str, &'a str)>,
@@ -199,11 +163,9 @@ mod tests {
         assert!(defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
         assert!(defaults.toggle_favorite(HarnessId::Codex, "gpt-5.2-codex"));
         assert!(defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        // Same id under a different harness is a distinct star.
         assert!(!defaults.is_favorite(HarnessId::Codex, "claude-opus-5"));
         defaults.save(dir.path()).unwrap();
         assert_eq!(ComposerDefaults::load(dir.path()), defaults);
-        // Untoggle removes, preserving the other's order.
         assert!(!defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
         assert!(!defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
         assert!(defaults.is_favorite(HarnessId::Codex, "gpt-5.2-codex"));

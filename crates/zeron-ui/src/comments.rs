@@ -1,9 +1,3 @@
-//! Diff comments: notes pinned to a line of the changes pane, staged on the
-//! composer and folded into the next prompt as plain text.
-//!
-//! [`with_comments`] appends them; [`extract_badge`] reads the same block back
-//! out for the transcript. There is no second data model.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommentSide {
     Old,
@@ -22,11 +16,7 @@ impl CommentSide {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffComment {
     pub id: String,
-    /// The diff's own path — post-rename when the file moved. This is the
-    /// grouping key the changes pane looks cards up by, NOT necessarily the
-    /// path the citation names (see [`DiffComment::cite_path`]).
     pub path: String,
-    /// Pre-rename path, when the file moved. `None` otherwise.
     pub old_path: Option<String>,
     pub side: CommentSide,
     pub line: u32,
@@ -50,8 +40,6 @@ impl DiffComment {
         }
     }
 
-    /// Tag the comment with the file's pre-rename path so an `Old`-side line
-    /// cites where that line actually lives.
     pub fn renamed_from(mut self, old_path: Option<impl Into<String>>) -> Self {
         self.old_path = old_path.map(Into::into);
         self
@@ -61,9 +49,6 @@ impl DiffComment {
         (self.side, self.line)
     }
 
-    /// The path the line number is valid in. An `Old`-side line only exists in
-    /// the pre-rename file, so citing `path` there points the agent at a line
-    /// of a file that never held it.
     pub fn cite_path(&self) -> &str {
         match self.side {
             CommentSide::Old => self.old_path.as_deref().unwrap_or(&self.path),
@@ -107,8 +92,6 @@ pub fn with_comments(text: &str, comments: &[DiffComment]) -> String {
     format!("{body}\n\n{COMMENT_BLOCK_HEADER}\n{}", bullets.join("\n"))
 }
 
-/// [`crate::badges::Extractor`] for the comment block. Matched only as a whole
-/// trailing block, so a prompt quoting the header mid-body is left alone.
 pub fn extract_badge(text: &str) -> Option<(String, crate::badges::MessageBadge)> {
     let marker = format!("\n\n{COMMENT_BLOCK_HEADER}\n");
     let at = text.rfind(&marker)?;
@@ -143,8 +126,6 @@ fn parse_bullets(block: &str) -> Vec<crate::badges::BadgeDetail> {
             }
             continue;
         };
-        // Earliest marker wins: a body may contain "(L): " itself, and matching
-        // that would swallow the body into the location.
         let split = [CommentSide::Old, CommentSide::New]
             .into_iter()
             .filter_map(|side| {
@@ -180,8 +161,6 @@ const CARD_GAP: f32 = 6.0;
 const CARD_WRAP_COLUMNS: usize = 64;
 const CARD_MAX_LINES: usize = 8;
 
-/// Wraps are guessed, not measured: the changes pane sizes bodies by arithmetic
-/// to drive the fold tween, and a measured card would desync it.
 pub fn card_body_lines(body: &str) -> usize {
     body.lines()
         .map(|line| line.chars().count().div_ceil(CARD_WRAP_COLUMNS).max(1))
@@ -259,7 +238,6 @@ mod tests {
             .renamed_from(Some("old_name.rs"));
         let new =
             comment("new_name.rs", CommentSide::New, 12, "nit").renamed_from(Some("old_name.rs"));
-        // The grouping key stays the diff's own path either way.
         assert_eq!(old.path, "new_name.rs");
         assert_eq!(new.path, "new_name.rs");
         let out = with_comments("x", &[old, new]);

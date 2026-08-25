@@ -1,7 +1,3 @@
-//! zeron — headed by default; `zeron headless` runs the engine alone. Both start
-//! local-only without credentials. `zeron login` and `zeron logout` select the
-//! profile used by the next engine start without mutating a live runtime.
-
 mod daemon;
 
 use clap::{Parser, Subcommand};
@@ -15,11 +11,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the local engine without a UI.
     Headless,
-    /// Show local workspace and engine configuration.
     Status,
-    /// Manage `zeron headless` as a background service (launchd / systemd --user).
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
@@ -28,34 +21,19 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DaemonCommand {
-    /// Install, enable, and start the service (captures ZERON_* env).
     Install,
-    /// Stop and remove the service.
     Uninstall,
-    /// Start the installed service.
     Start,
-    /// Stop the service.
     Stop,
-    /// Restart the service.
     Restart,
-    /// Show the service manager's view of the daemon.
     Status,
 }
 
-/// mimalloc: system malloc (macOS libmalloc especially) never returns the
-/// streaming churn's high-water pages, so transient allocation became
-/// permanent RSS (docs/memory-plan.md §1).
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    // Long-running modes log at info, one-shot CLI commands at warn (RUST_LOG
-    // overrides either).
-    // loro's internal block-encode diagnostics log at info and flood
-    // journald on every snapshot export — enough to fill a disk on a
-    // long-running headless host. Quiet them by default (RUST_LOG still
-    // overrides the whole filter).
     let long_running = matches!(&cli.command, None | Some(Command::Headless));
     let default_filter = if long_running {
         "info,loro_internal=warn,loro=warn"
@@ -64,11 +42,6 @@ fn main() -> anyhow::Result<()> {
     };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| default_filter.into());
-    // Long-running modes mirror stdout logging to {data_dir}/logs — a headed
-    // app launched from Finder has no visible stdout, which left every local
-    // wedge report ("stale until restart") with zero diagnostics even though
-    // the engine logs the exact failure line. One file per launch, previous
-    // launch kept as `.old`.
     let log_file = if long_running {
         let mode = if cli.command.is_some() {
             "headless"
@@ -122,8 +95,6 @@ fn main() -> anyhow::Result<()> {
             DaemonCommand::Status => daemon::status(),
         },
         None => {
-            // Headed: the UI probes ZERON_IPC_PORT and connects to a running
-            // daemon, or embeds the engine in-process (ARCHITECTURE §1).
             zeron_ui::run_app(zeron_ui::UiConfig {
                 data_dir: std::env::var_os("ZERON_DATA_DIR")
                     .map(std::path::PathBuf::from)
@@ -139,7 +110,6 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Resolve the local engine configuration shared by `headless` and `status`.
 fn engine_config_from_env() -> zeron_engine::EngineConfig {
     zeron_engine::EngineConfig {
         data_dir: std::env::var_os("ZERON_DATA_DIR")
@@ -153,8 +123,6 @@ fn engine_config_from_env() -> zeron_engine::EngineConfig {
     }
 }
 
-/// `ZERON_HARNESS` (kebab-case id) picks the default harness for chats without a
-/// config row — `mock` powers the e2e smoke; default `claude-code`.
 fn harness_from_env() -> zeron_engine::HarnessId {
     match std::env::var("ZERON_HARNESS").as_deref().map(str::trim) {
         Ok("mock") => zeron_engine::HarnessId::Mock,
@@ -170,8 +138,6 @@ fn harness_from_env() -> zeron_engine::HarnessId {
 fn dirs_data_dir() -> std::path::PathBuf {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME not set"));
     let dir = home.join(".zeron");
-    // One-shot 0.2.0 migration: adopt the pre-rename data dir (local profile,
-    // device identity, prefs) instead of starting fresh.
     if !dir.exists() {
         let old = home.join(".comet-native");
         if old.exists() && std::fs::rename(&old, &dir).is_ok() {
@@ -181,19 +147,6 @@ fn dirs_data_dir() -> std::path::PathBuf {
     dir
 }
 
-/// `{data_dir}/logs/zeron-{mode}.log`, previous launch preserved as `.old`.
-/// Headed and headless are separate files so an embedded-engine app and a
-/// daemon on the same machine never interleave writes.
-///
-/// The returned file holds an exclusive `flock` for the process lifetime:
-/// rotate-on-launch is only safe when nothing is still WRITING the current
-/// file. On 2026-08-04 a dev build launched twice next to the running
-/// installed app — the first rename put the daemon's live log at `.old`, the
-/// second unlinked it entirely, and the daemon spent the rest of the incident
-/// logging to an orphaned inode (an entire day of sync diagnostics gone at
-/// the exact moment they were needed). A launch that finds the canonical file
-/// locked logs to `zeron-{mode}.{pid}.log` instead; the next lock-holding
-/// launch sweeps pid-suffixed files older than a week.
 fn open_log_file(mode: &str) -> Option<std::fs::File> {
     let dir = std::env::var_os("ZERON_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -202,14 +155,12 @@ fn open_log_file(mode: &str) -> Option<std::fs::File> {
     open_log_file_in(&dir, mode)
 }
 
-/// Dir-parameterized body of [`open_log_file`] (unit-testable without env).
 fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> {
     std::fs::create_dir_all(dir).ok()?;
     let path = dir.join(format!("zeron-{mode}.log"));
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        // Probe the CURRENT inode for a live writer before touching it.
         let preexisting = path.exists();
         let existing = std::fs::OpenOptions::new()
             .read(true)
@@ -220,15 +171,11 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
             .ok()?;
         let rc = unsafe { libc::flock(existing.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc != 0 {
-            // A live process owns the canonical log — leave it alone.
             return std::fs::File::create(
                 dir.join(format!("zeron-{mode}.{}.log", std::process::id())),
             )
             .ok();
         }
-        // No live writer: rotate, create fresh, and lock it as ours. (The
-        // probe's flock dies with `existing`; a first-ever launch has nothing
-        // to rotate — the probe itself created the empty file.)
         drop(existing);
         if preexisting {
             let _ = std::fs::rename(&path, dir.join(format!("zeron-{mode}.log.old")));
@@ -253,11 +200,8 @@ mod log_file_tests {
     fn second_launch_never_rotates_a_live_processes_log() {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
-        // First launch owns the canonical file and keeps writing.
         let first = open_log_file_in(dir, "headed").expect("first log");
         assert!(dir.join("zeron-headed.log").is_file());
-        // Second launch while the first is alive: canonical file untouched,
-        // pid-suffixed overflow file instead (the 2026-08-04 clobber).
         let second = open_log_file_in(dir, "headed").expect("second log");
         let pid_path = dir.join(format!("zeron-headed.{}.log", std::process::id()));
         assert!(pid_path.is_file(), "expected pid-suffixed overflow log");
@@ -266,7 +210,6 @@ mod log_file_tests {
             "live canonical log must not be rotated away"
         );
         drop(second);
-        // After the owner exits, a fresh launch rotates normally.
         drop(first);
         let third = open_log_file_in(dir, "headed").expect("third log");
         assert!(
@@ -277,8 +220,6 @@ mod log_file_tests {
     }
 }
 
-/// Delete `zeron-{mode}.{pid}.log` overflow files older than a week — they
-/// only exist when a second instance raced a live one for the canonical log.
 #[cfg(unix)]
 fn sweep_stale_pid_logs(dir: &std::path::Path, mode: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
